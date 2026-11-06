@@ -20,7 +20,11 @@ File nằm ở `target\release\hazegard-gui.exe`.
 ## Dùng
 - Chỉ cần 1 file `.exe`. Cạnh nó sẽ tự sinh `hazegard_config.json` và các file CSV.
 - Muốn hiện ảnh máy thật: đặt `hazegard.png` (hoặc `.jpg`) cạnh file exe.
-- Nếu chương trình đóng đột ngột, xem `hazegard_crash.log` cạnh file exe.
+- Nếu chương trình không mở được: sẽ hiện hộp thoại báo lỗi và ghi `hazegard_crash.log` cạnh file exe
+  (gửi nội dung file này để chẩn đoán).
+- Windows có thể chặn file tải về: chuột phải file .exe → Properties → tick **Unblock** → OK;
+  hoặc ở cảnh báo SmartScreen chọn **More info → Run anyway**. Nếu bạn giải nén từ file .zip, hãy
+  giải nén ra thư mục riêng trước khi chạy.
 - Yêu cầu đồ họa: cần driver card màn hình bình thường (DirectX 12 / Vulkan / OpenGL).
   Nếu máy quá cũ hoặc chạy qua Remote Desktop mà không mở được, dùng bản Python.
 
