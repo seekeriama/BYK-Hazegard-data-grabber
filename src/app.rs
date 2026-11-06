@@ -356,10 +356,12 @@ impl HazeGardApp {
             t_offset: fmt_offset(toff),
             h_offset: fmt_offset(hoff),
         };
+        let minute_label = row.run_minute.clone();
         self.save_row(Local::now().naive_local(), tc, hc, row);
         let ts = tc.map(|v| format!("{v:.1}")).unwrap_or("-".into());
         let hs = hc.map(|v| format!("{v:.2}")).unwrap_or("-".into());
-        self.write_log(&format!("04: {pos}- %T: {ts}\n04: {pos}- %H: {hs}\n\n"), Kind::Normal);
+        let rm = minute_label; // RunMinute do người vận hành nhập (không còn số 04 cố định)
+        self.write_log(&format!("{rm}: {pos}- %T: {ts}\n{rm}: {pos}- %H: {hs}\n\n"), Kind::Normal);
         self.k += 1;
         if self.k >= self.seq.len() {
             // xong 1 lượt: RunNumber giữ nguyên, RunMinute xoá để nhập số mới

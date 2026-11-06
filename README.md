@@ -3,7 +3,6 @@
 Phần mềm nhận kết quả đo từ BYK haze-gard plus qua RS232, ghi `hazegarddata<yyyymmdd>.csv`
 (mỗi ngày 1 file). Chức năng giống bản Python `hazegard_gui.py`; dùng chung file
 `hazegard_config.json` và `hazegard_raw.log`.
-<img width="1094" height="1093" alt="image" src="https://github.com/user-attachments/assets/7c859f21-08c7-4bf2-9630-48639d811a85" />
 
 ## Lấy file .exe (không cần cài Rust)
 1. Tạo repository GitHub (private), upload toàn bộ thư mục này (giữ nguyên `.github/workflows/build.yml`).
