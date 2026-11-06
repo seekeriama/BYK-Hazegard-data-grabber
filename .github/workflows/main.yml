@@ -1,0 +1,31 @@
+name: Build Windows exe
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      # Test không chặn việc tạo file exe; xem kết quả trong tab Actions
+      - name: Unit tests
+        run: cargo test --lib --release
+        continue-on-error: true
+
+      - name: Đặt tên file
+        shell: pwsh
+        run: Copy-Item target/release/hazegard-gui.exe hazegard_gui.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hazegard_gui
+          path: hazegard_gui.exe
