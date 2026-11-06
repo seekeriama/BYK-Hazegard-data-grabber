@@ -1,0 +1,23 @@
+[package]
+name = "hazegard-gui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.45"
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "wgpu", "x11", "clipboard"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+serialport = { version = "4.10.1", default-features = false }
+sha2 = "0.11.1"
+
+[target."cfg(windows)".dependencies]
+rfd = "0.17.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
