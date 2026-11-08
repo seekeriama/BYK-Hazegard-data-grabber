@@ -47,6 +47,7 @@ struct SettingsState {
     outdir: String,
     t_offset: String,
     h_offset: String,
+    release_first: bool,
     ports: Vec<String>,
     error: Option<String>,
 }
@@ -258,6 +259,7 @@ impl HazeGardApp {
             port,
             self.events_tx.clone(),
             self.app_dir.join("hazegard_raw.log"),
+            self.cfg.release_first,
             move || ctx.request_repaint(),
         ));
     }
@@ -417,6 +419,7 @@ impl HazeGardApp {
             outdir: if self.cfg.outdir.is_empty() { self.app_dir.display().to_string() } else { self.cfg.outdir.clone() },
             t_offset: fmt_offset(self.cfg.t_offset),
             h_offset: fmt_offset(self.cfg.h_offset),
+            release_first: self.cfg.release_first,
             ports,
             error: None,
         });
@@ -444,6 +447,7 @@ impl HazeGardApp {
             outdir: if same_as_app { String::new() } else { outdir.display().to_string() },
             t_offset: t,
             h_offset: h,
+            release_first: s.release_first,
         };
         s.error = None;
         let changed = new != self.cfg || !self.cfg_path.exists();
@@ -700,6 +704,7 @@ impl HazeGardApp {
                     ui.end_row();
                 });
                 ui.add_space(4.0);
+                ui.checkbox(&mut s.release_first, "Giải phóng máy đang kẹt Online Mode khi khởi động (gửi 50h)");
                 ui.label(RichText::new("Kết quả ghi vào CSV = giá trị máy đo + offset").color(Color32::GRAY));
                 if let Some(e) = &s.error {
                     ui.colored_label(C_ERR, e);
@@ -842,7 +847,7 @@ mod tests {
         app.cfg_path = std::env::temp_dir().join(format!("hz_cfg_{}.json", std::process::id()));
         let _ = std::fs::remove_file(&app.cfg_path);
         app.app_dir = std::env::temp_dir();
-        app.cfg = Config { port: String::new(), line: "VGI3".into(), outdir: String::new(), t_offset: 0.0, h_offset: 0.0 };
+        app.cfg = Config { port: String::new(), line: "VGI3".into(), outdir: String::new(), t_offset: 0.0, h_offset: 0.0, release_first: true };
         app.settings = None;
 
         app.open_settings();

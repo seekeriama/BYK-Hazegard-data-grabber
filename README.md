@@ -20,6 +20,10 @@ File nằm ở `target\release\hazegard-gui.exe`.
 ## Dùng
 - Chỉ cần 1 file `.exe`. Cạnh nó sẽ tự sinh `hazegard_config.json` và các file CSV.
 - Muốn hiện ảnh máy thật: đặt `hazegard.png` (hoặc `.jpg`) cạnh file exe.
+- Khởi động an toàn: chương trình tự thử lần lượt DirectX 12 → Vulkan → OpenGL; nếu một kiểu làm sập
+  lúc khởi động thì tự chuyển sang kiểu kế tiếp. Mỗi lần thử được ghi vào `hazegard_startup.log`
+  (gửi file này để chẩn đoán nếu máy nào đó không mở được).
+- Gỡ lỗi: chạy `hazegard_gui.exe --direct` để chạy thẳng không qua bước thử tự động.
 - Nếu chương trình không mở được: sẽ hiện hộp thoại báo lỗi và ghi `hazegard_crash.log` cạnh file exe
   (gửi nội dung file này để chẩn đoán).
 - Windows có thể chặn file tải về: chuột phải file .exe → Properties → tick **Unblock** → OK;

@@ -17,11 +17,13 @@ pub struct Config {
     pub outdir: String,
     pub t_offset: f64,
     pub h_offset: f64,
+    /// Gửi 50h trước khi handshake 4Fh để giải phóng máy đang kẹt Online Mode.
+    pub release_first: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { port: String::new(), line: "VGI3".into(), outdir: String::new(), t_offset: 0.0, h_offset: 0.0 }
+        Self { port: String::new(), line: "VGI3".into(), outdir: String::new(), t_offset: 0.0, h_offset: 0.0, release_first: true }
     }
 }
 

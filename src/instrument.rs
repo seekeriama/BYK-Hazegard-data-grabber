@@ -41,13 +41,14 @@ impl Instrument {
         port_name: String,
         events: Sender<Event>,
         raw_log: PathBuf,
+        release_first: bool,
         repaint: impl Fn() + Send + 'static,
     ) -> Self {
         let (cmd_tx, cmd_rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let online = Arc::new(AtomicBool::new(false));
         let (s2, o2) = (stop.clone(), online.clone());
-        let handle = std::thread::spawn(move || run(port_name, events, cmd_rx, s2, o2, raw_log, repaint));
+        let handle = std::thread::spawn(move || run(port_name, events, cmd_rx, s2, o2, raw_log, release_first, repaint));
         Self { cmd_tx, stop, online, handle: Some(handle) }
     }
 
@@ -80,6 +81,7 @@ fn run(
     stop: Arc<AtomicBool>,
     online_flag: Arc<AtomicBool>,
     raw_log: PathBuf,
+    release_first: bool,
     repaint: impl Fn(),
 ) {
     let send = |ev: Event| {
@@ -110,6 +112,12 @@ fn run(
         }
     };
 
+    // 0) giải phóng máy đang kẹt Online Mode (lệnh 50h) rồi mới handshake
+    if release_first {
+        let _ = port.clear(serialport::ClearBuffer::Input);
+        let _ = port.write_all(&[protocol::CMD_END]);
+        std::thread::sleep(Duration::from_millis(400));
+    }
     // 1) thử vào online mode (lệnh 4Fh)
     let _ = port.clear(serialport::ClearBuffer::Input);
     let _ = port.write_all(&[protocol::CMD_ONLINE]);
@@ -223,15 +231,29 @@ mod tests {
 
     #[test]
     fn online_mode_with_fake_instrument() {
+        let seq = online_session(true);
+        assert_eq!(seq, vec![0x50, 0x4F, 0x50], "bat dau phai gui 50h roi 4Fh, thoat gui 50h");
+    }
+
+    #[test]
+    fn online_mode_without_release() {
+        let seq = online_session(false);
+        assert_eq!(seq, vec![0x4F, 0x50], "tat tuy chon: chi gui 4Fh khi bat dau");
+    }
+
+    /// Chạy 1 phiên online với máy giả, trả về chuỗi byte máy nhận được (trừ lệnh 04h).
+    fn online_session(release_first: bool) -> Vec<u8> {
         let (mut master, slave) = TTYPort::pair().unwrap();
         let name = slave.name().unwrap();
         let fake = std::thread::spawn(move || {
             let mut b = [0u8; 16];
             let t0 = Instant::now();
+            let mut seq: Vec<u8> = vec![];
             let mut got_end = false;
             while t0.elapsed() < Duration::from_secs(8) && !got_end {
                 if let Ok(n) = master.read(&mut b) {
                     for &c in &b[..n] {
+                        if c != 0x04 { seq.push(c); }
                         match c {
                             0x4F => { master.write_all(&[0x4F, 0x21, 1, 3, 1, 0, 0, 1, 1, 5, 0x12, 0x01]).unwrap(); }
                             0x04 => {
@@ -239,17 +261,17 @@ mod tests {
                                 master.write_all(b"\x04!f89,2\x000,05\x00").unwrap();
                                 master.write_all(b"w----\x00").unwrap();
                             }
-                            0x50 => got_end = true,
+                            0x50 => got_end = seq.contains(&0x4F),
                             _ => {}
                         }
                     }
                 }
             }
-            got_end
+            seq
         });
         let (tx, rx) = channel();
         let log = std::env::temp_dir().join(format!("hz_raw_{}.log", std::process::id()));
-        let mut inst = Instrument::start(name, tx, log.clone(), || {});
+        let mut inst = Instrument::start(name, tx, log.clone(), release_first, || {});
         let ev = collect(&rx, 1, 5);
         assert!(matches!(&ev[0], Event::Connected { online: true, status: Some(s) } if s.firmware == "0112" && s.has_haze()));
         assert!(inst.is_online());
@@ -258,8 +280,9 @@ mod tests {
         assert!(matches!(ev[0], Event::PortSwitch), "{ev:?}");
         assert!(matches!(ev[1], Event::Result { t: Some(t), h: Some(h) } if (t - 89.2).abs() < 1e-9 && (h - 0.05).abs() < 1e-9), "{ev:?}");
         inst.stop();
-        assert!(fake.join().unwrap(), "may phai nhan duoc lenh 50h khi thoat");
+        let seq = fake.join().unwrap();
         let _ = std::fs::remove_file(log);
+        seq
     }
 
     #[test]
@@ -268,7 +291,7 @@ mod tests {
         let name = slave.name().unwrap();
         let (tx, rx) = channel();
         let log = std::env::temp_dir().join(format!("hz_raw2_{}.log", std::process::id()));
-        let mut inst = Instrument::start(name, tx, log.clone(), || {});
+        let mut inst = Instrument::start(name, tx, log.clone(), true, || {});
         let ev = collect(&rx, 1, 6);
         assert!(matches!(ev[0], Event::Connected { online: false, .. }), "{ev:?}");
         assert!(!inst.is_online());
