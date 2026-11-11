@@ -131,19 +131,31 @@ def fmt_num(v, nd):
     return "" if v is None else f"{v:.{nd}f}"
 
 
+def clean_system_name(name):
+    """Ten he thong dung trong ten file: bo ky tu khong hop le, khoang trang -> _ ."""
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", str(name or "")).strip()
+    return re.sub(r"\s+", "_", name)
+
+
 class DailyCsv:
     """Ghi moi ngay 1 file hazegarddata<yyyymmdd>.csv, chi chua du lieu cua ngay do.
     Ten file lay theo ngay cua tung lan do nen qua nua dem tu dong sang file moi."""
 
-    def __init__(self, outdir=".", **extras):
+    def __init__(self, outdir=".", system="", **extras):
         self.outdir = outdir
+        # system rong -> hazegarddata<yyyymmdd>.csv ; co ten -> Hazegard_Data_<system>_<yyyymmdd>.csv
+        self.system = clean_system_name(system)
         self.extras = {"line": "", "run_number": "", "run_minute": "", "position": "",
                        "t_offset": "", "h_offset": ""}
         self.extras.update({k: v for k, v in extras.items() if v is not None})
         os.makedirs(outdir, exist_ok=True)
 
     def path_for(self, dt):
-        return os.path.join(self.outdir, f"hazegarddata{dt:%Y%m%d}.csv")
+        if self.system:
+            name = f"Hazegard_Data_{self.system}_{dt:%Y%m%d}.csv"
+        else:
+            name = f"hazegarddata{dt:%Y%m%d}.csv"
+        return os.path.join(self.outdir, name)
 
     def write(self, dt, t, h, **override):
         e = {**self.extras, **override}

@@ -25,3 +25,11 @@ Có thể bấm **Run workflow** để build lại bất cứ lúc nào, ví d�
 - Đóng Client_HazeGard.exe trước khi chạy (DLL chỉ cho một chương trình dùng tại một thời điểm).
 - Máy i đo trực tiếp trên máy (F5 không dùng); mỗi lần đo xong chương trình tự đọc kết quả.
 - Nếu lỗi, xem `hazegard_raw.log` cạnh exe (ghi các lệnh XML gửi/nhận) và gửi cho tôi.
+
+
+## Tên file CSV theo hệ thống
+
+Trong Cài đặt, ô **Tên hệ thống (file)**:
+- để trống → `hazegarddata<yyyymmdd>.csv` (như cũ)
+- điền `ERS` → `Hazegard_Data_ERS_<yyyymmdd>.csv`; điền `Sequoia` → `Hazegard_Data_Sequoia_<yyyymmdd>.csv`
+Khoảng trắng được đổi thành `_`, ký tự không hợp lệ trong tên file bị bỏ. Cấu trúc cột bên trong giữ nguyên.

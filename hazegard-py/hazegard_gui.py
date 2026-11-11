@@ -76,7 +76,8 @@ DEFAULT_CONFIG = {"port": "", "line": "VGI3", "outdir": "",   # "" = thu muc chu
                   "t_offset": 0.0, "h_offset": 0.0,
                   "release_first": True,
                   "model": "plus",      # "plus" (RS232) hoac "i" (USB qua BYKCommunication.dll)
-                  "i_ip": ""}           # chi dien neu may i noi qua mang LAN
+                  "i_ip": "",
+                  "file_system": ""}     # "" = hazegarddata<yyyymmdd>; "ERS" -> Hazegard_Data_ERS_<yyyymmdd>           # chi dien neu may i noi qua mang LAN
 # Password xac nhan khi luu cai dat (chi luu ma bam SHA-256, khong luu chu ro)
 SETTINGS_PW_SHA256 = "f51413286fbac40dfc6e9c3757427acf784c86fd80b749f1ccb5d23de51414df"
 
@@ -396,7 +397,7 @@ class HazeGardApp:
         """Thu muc luu CSV; neu khong tao/ghi duoc (vd duong dan cua may khac) -> dung thu muc chuong trinh."""
         want = (self.cfg.get("outdir") or "").strip() or APP_DIR
         try:
-            store = hr.DailyCsv(want)
+            store = hr.DailyCsv(want, system=self.cfg.get("file_system", ""))
             test = os.path.join(want, ".hazegard_write_test")
             open(test, "w").close()
             os.remove(test)
@@ -408,7 +409,7 @@ class HazeGardApp:
             if hasattr(self, "log"):
                 self.write_log(self._outdir_warning, "warn")
                 self._outdir_warning = None
-            return hr.DailyCsv(APP_DIR)
+            return hr.DailyCsv(APP_DIR, system=self.cfg.get("file_system", ""))
 
     def update_conn_label(self):
         if self.connected:
@@ -656,9 +657,10 @@ class SettingsDialog(tk.Toplevel):
         self.release_var = tk.BooleanVar(value=bool(cfg.get("release_first", True)))
         self.v["model"] = tk.StringVar(value="i" if cfg.get("model") == "i" else "plus")
         self.v["i_ip"] = tk.StringVar(value=cfg.get("i_ip", ""))
+        self.v["file_system"] = tk.StringVar(value=cfg.get("file_system", ""))
         ports = [p.device for p in list_ports.comports()]
         rows = [("Đời máy", "model"), ("Cổng COM (plus)", "port"), ("IP máy i (tuỳ chọn)", "i_ip"),
-                ("Line", "line"), ("Thư mục lưu CSV", "outdir"),
+                ("Line", "line"), ("Thư mục lưu CSV", "outdir"), ("Tên hệ thống (file)", "file_system"),
                 ("%T offset", "t_offset"), ("%H offset", "h_offset")]
         for i, (txt, key) in enumerate(rows):
             tk.Label(self, text=txt, anchor="e", width=18).grid(row=i, column=0, padx=6, pady=4)
@@ -675,8 +677,11 @@ class SettingsDialog(tk.Toplevel):
         tk.Checkbutton(self, text="Giải phóng máy đang kẹt Online Mode khi khởi động (gửi 50h)",
                        variable=self.release_var).grid(row=len(rows), column=0, columnspan=3,
                                                        sticky="w", padx=8)
-        tk.Label(self, text="Kết quả ghi vào CSV = giá trị máy đo + offset",
-                 fg="#666").grid(row=len(rows) + 1, column=0, columnspan=3, pady=(4, 0))
+        tk.Label(self, text="Kết quả ghi vào CSV = giá trị máy đo + offset\n"
+                            "Tên hệ thống trống → hazegarddata<yyyymmdd>.csv ; "
+                            "vd ERS → Hazegard_Data_ERS_<yyyymmdd>.csv",
+                 fg="#666", justify="left").grid(row=len(rows) + 1, column=0, columnspan=3,
+                                                 pady=(4, 0))
         f = tk.Frame(self)
         f.grid(row=len(rows) + 2, column=0, columnspan=3, pady=8)
         tk.Button(f, text="Lưu & kết nối", width=14, command=self.save).pack(side="left", padx=6)
@@ -703,6 +708,7 @@ class SettingsDialog(tk.Toplevel):
             return
         cfg = self.app.cfg
         new = dict(model=self.v["model"].get(), i_ip=self.v["i_ip"].get().strip(),
+                   file_system=hr.clean_system_name(self.v["file_system"].get()),
                    port=self.v["port"].get().strip(), line=self.v["line"].get().strip(),
                    outdir="" if os.path.normcase(os.path.abspath(outdir)) ==
                    os.path.normcase(APP_DIR) else outdir,
