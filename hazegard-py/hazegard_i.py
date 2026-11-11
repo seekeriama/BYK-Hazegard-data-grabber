@@ -71,7 +71,9 @@ class BykDll:
 
 
 def find_dll(app_dir):
-    for d in (app_dir, os.getcwd()):
+    for d in (getattr(sys, "_MEIPASS", None), app_dir, os.getcwd()):   # _MEIPASS: DLL nhung trong exe
+        if not d:
+            continue
         p = os.path.join(d, "BYKCommunication.dll")
         if os.path.exists(p):
             return p

@@ -14,7 +14,7 @@ Ket qua (da cong offset) ghi vao hazegarddata<yyyymmdd>.csv, moi ngay 1 file.
 
 Cai dat (cong COM, ten Line, thu muc luu, offset %T / %H):
   - nhap dup vao dong "Connected: ..." o tren cung, hoac bam F12
-  - luu trong file hazegard_config.json canh chuong trinh
+  - luu cai dat trong Registry Windows (HKCU\\Software\\Pilkington\\HazeGardLogger), khong tao file json
 """
 
 import sys as _sys, os as _os, traceback as _tb
@@ -77,6 +77,7 @@ DEFAULT_CONFIG = {"port": "", "line": "VGI3", "outdir": "",   # "" = thu muc chu
                   "release_first": True,
                   "model": "plus",      # "plus" (RS232) hoac "i" (USB qua BYKCommunication.dll)
                   "i_ip": "",           # chi dien neu may i noi qua mang LAN
+                  "bg_image": "",       # duong dan anh nen (PNG/GIF/JPG...); "" = anh mac dinh
                   "file_formats": ["default"]}   # 1-3 trong: default, ERS, Sequoia
 
 # Dinh dang ten file CSV: khoa -> ten he thong dung trong ten file ("" = hazegarddata<yyyymmdd>.csv)
@@ -107,24 +108,103 @@ C_WARN = "#c55a11"
 C_ERR = "#c00000"
 
 
-def load_config():
+REG_PATH = r"Software\Pilkington\HazeGardLogger"
+try:
+    import winreg                    # chi co tren Windows
+except ImportError:
+    winreg = None
+
+
+def _from_data(data):
     cfg = dict(DEFAULT_CONFIG)
-    try:
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-        cfg.update(data)
-        if "file_formats" not in data and str(data.get("file_system", "")).strip():
-            # file cau hinh ban truoc (1 ten he thong) -> doi sang lua chon moi
-            old = str(data["file_system"]).strip().lower()
-            cfg["file_formats"] = [k for k in FILE_FORMATS if k.lower() == old] or ["default"]
-    except (OSError, ValueError):
-        pass
+    cfg.update(data)
+    if "file_formats" not in data and str(data.get("file_system", "")).strip():
+        # file cau hinh ban truoc (1 ten he thong) -> doi sang lua chon moi
+        old = str(data["file_system"]).strip().lower()
+        cfg["file_formats"] = [k for k in FILE_FORMATS if k.lower() == old] or ["default"]
     cfg.pop("file_system", None)
     cfg["file_formats"] = normalize_formats(cfg.get("file_formats"))
     return cfg
 
 
+def _reg_load():
+    """Doc cau hinh tu Registry; None neu chua co."""
+    if winreg is None:
+        return None
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH)
+    except OSError:
+        return None
+    data = {}
+    with key:
+        for name in DEFAULT_CONFIG:
+            try:
+                v, _ = winreg.QueryValueEx(key, name)
+            except OSError:
+                continue
+            d = DEFAULT_CONFIG[name]
+            try:
+                if isinstance(d, bool):
+                    v = bool(int(v))
+                elif isinstance(d, float):
+                    v = float(str(v).replace(",", "."))
+                elif isinstance(d, list):
+                    v = [x.strip() for x in str(v).split(",") if x.strip()]
+                else:
+                    v = str(v)
+            except ValueError:
+                continue
+            data[name] = v
+    return _from_data(data)
+
+
+def _reg_save(cfg):
+    key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_SET_VALUE)
+    with key:
+        for name, d in DEFAULT_CONFIG.items():
+            v = cfg.get(name, d)
+            if isinstance(d, bool):
+                winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(bool(v)))
+            elif isinstance(d, list):
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, ",".join(v))
+            else:
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, str(v))
+
+
+def config_exists():
+    """Da tung luu cai dat chua (lan dau chay -> luon hoi password khi bam Luu)."""
+    if winreg is not None:
+        try:
+            winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH))
+            return True
+        except OSError:
+            return False
+    return os.path.exists(CONFIG_PATH)
+
+
+def load_config():
+    """Windows: doc tu Registry (khong tao file json); neu chua co thi nhap file json cu (neu con).
+    He dieu hanh khac: dung hazegard_config.json."""
+    cfg = _reg_load()
+    if cfg is not None:
+        return cfg
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            cfg = _from_data(json.load(f))
+    except (OSError, ValueError):
+        return _from_data({})
+    if winreg is not None:
+        try:
+            _reg_save(cfg)
+        except OSError:
+            pass
+    return cfg
+
+
 def save_config(cfg):
+    if winreg is not None:
+        _reg_save(cfg)
+        return
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
@@ -371,25 +451,45 @@ class HazeGardApp:
 
         self.ent_rn.focus_set()
 
+    def _load_picture(self, path):
+        """Doc anh va thu nho cho vua khung 560x280. PNG/GIF doc truc tiep; JPG/BMP... can Pillow."""
+        W, H = 560, 280
+        try:
+            from PIL import Image, ImageTk
+            im = Image.open(path)
+            im.thumbnail((W, H))
+            return ImageTk.PhotoImage(im)
+        except ImportError:
+            img = tk.PhotoImage(file=path)          # chi PNG / GIF
+            f = max(-(-img.width() // W), -(-img.height() // H), 1)
+            return img.subsample(f) if f > 1 else img
+
     def _draw_picture(self):
-        """Hien anh hazegard.png / .gif dat canh chuong trinh neu co; neu khong ve hinh minh hoa."""
+        """Anh nen: duong dan chon trong Cai dat (F12) -> hazegard.png/.gif/.jpg canh chuong trinh
+        -> hinh minh hoa mac dinh."""
         c = self.canvas
+        c.delete("all")
+        self._img = None
+        cands = []
+        chosen = (self.cfg.get("bg_image") or "").strip() if hasattr(self, "cfg") else ""
+        if chosen:
+            cands.append((chosen, True))
         for name in ("hazegard.png", "hazegard.gif", "hazegard.jpg"):
-            path = os.path.join(APP_DIR, name)
+            cands.append((os.path.join(APP_DIR, name), False))
+        for path, explicit in cands:
             if not os.path.exists(path):
+                if explicit:
+                    self._bg_error = f"Không thấy file ảnh nền:\n  {path}\n"
                 continue
             try:
-                try:
-                    from PIL import Image, ImageTk
-                    im = Image.open(path)
-                    im.thumbnail((560, 280))
-                    self._img = ImageTk.PhotoImage(im)
-                except ImportError:
-                    self._img = tk.PhotoImage(file=path)
+                self._img = self._load_picture(path)
                 c.create_image(280, 140, image=self._img)
                 return
-            except Exception:
-                pass
+            except Exception as e:                      # noqa: BLE001
+                if explicit:
+                    hint = ("" if path.lower().endswith((".png", ".gif"))
+                            else "\n(JPG/BMP cần bản exe có Pillow; hoặc đổi sang PNG)")
+                    self._bg_error = f"Không đọc được ảnh nền:\n  {path}\n  {e}{hint}\n"
         # Hinh minh hoa don gian: than may, cong do, gia kep mau
         blue, dark = "#2f86d1", "#1f5f99"
         c.create_rectangle(0, 240, 560, 280, fill="#d0d6dc", outline="")
@@ -410,6 +510,11 @@ class HazeGardApp:
         self.var["tcorr"].set(f"True: {fmt_offset(t)}" if t else "False: 0")
         self.var["hcorr"].set(f"True: {fmt_offset(h)}" if h else "False: 0")
         self.store = self.make_store()
+        self._bg_error = None
+        self._draw_picture()
+        if self._bg_error and hasattr(self, "log"):
+            self.write_log(self._bg_error + "\n", "warn")
+            self._bg_error = None
         self.update_conn_label()
         self.refresh_buttons()
 
@@ -685,11 +790,12 @@ class SettingsDialog(tk.Toplevel):
         self.release_var = tk.BooleanVar(value=bool(cfg.get("release_first", True)))
         self.v["model"] = tk.StringVar(value="i" if cfg.get("model") == "i" else "plus")
         self.v["i_ip"] = tk.StringVar(value=cfg.get("i_ip", ""))
+        self.v["bg_image"] = tk.StringVar(value=cfg.get("bg_image", ""))
         self.fmt_vars = {k: tk.BooleanVar(value=k in normalize_formats(cfg.get("file_formats")))
                          for k in FILE_FORMATS}
         ports = [p.device for p in list_ports.comports()]
         rows = [("Đời máy", "model"), ("Cổng COM (plus)", "port"), ("IP máy i (tuỳ chọn)", "i_ip"),
-                ("Line", "line"), ("Thư mục lưu CSV", "outdir"),
+                ("Line", "line"), ("Thư mục lưu CSV", "outdir"), ("Ảnh nền (PNG/GIF/JPG)", "bg_image"),
                 ("%T offset", "t_offset"), ("%H offset", "h_offset")]
         for i, (txt, key) in enumerate(rows):
             tk.Label(self, text=txt, anchor="e", width=18).grid(row=i, column=0, padx=6, pady=4)
@@ -703,6 +809,12 @@ class SettingsDialog(tk.Toplevel):
             w.grid(row=i, column=1, sticky="w", pady=4)
             if key == "outdir":
                 tk.Button(self, text="...", command=self.browse).grid(row=i, column=2, padx=4)
+            if key == "bg_image":
+                bf = tk.Frame(self)
+                bf.grid(row=i, column=2, padx=4)
+                tk.Button(bf, text="...", command=self.browse_bg).pack(side="left")
+                tk.Button(bf, text="Mặc định", command=lambda: self.v["bg_image"].set("")
+                          ).pack(side="left", padx=(2, 0))
         ff = tk.LabelFrame(self, text="Định dạng tên file CSV (chọn 1–3)")
         ff.grid(row=len(rows), column=0, columnspan=3, sticky="we", padx=8, pady=(6, 2))
         for k in FILE_FORMATS:
@@ -720,6 +832,13 @@ class SettingsDialog(tk.Toplevel):
         tk.Button(f, text="Lưu & kết nối", width=14, command=self.save).pack(side="left", padx=6)
         tk.Button(f, text="Hủy", width=8, command=self.destroy).pack(side="left", padx=6)
         self.grab_set()
+
+    def browse_bg(self):
+        f = filedialog.askopenfilename(
+            parent=self, title="Chọn ảnh nền",
+            filetypes=[("Ảnh", "*.png *.gif *.jpg *.jpeg *.bmp"), ("Tất cả", "*.*")])
+        if f:
+            self.v["bg_image"].set(f)
 
     def browse(self):
         d = filedialog.askdirectory(parent=self, initialdir=self.v["outdir"].get() or APP_DIR)
@@ -745,13 +864,14 @@ class SettingsDialog(tk.Toplevel):
             return
         cfg = self.app.cfg
         new = dict(model=self.v["model"].get(), i_ip=self.v["i_ip"].get().strip(),
+                   bg_image=self.v["bg_image"].get().strip(),
                    file_formats=[k for k in FILE_FORMATS if self.fmt_vars[k].get()],
                    port=self.v["port"].get().strip(), line=self.v["line"].get().strip(),
                    outdir="" if os.path.normcase(os.path.abspath(outdir)) ==
                    os.path.normcase(APP_DIR) else outdir,
                    t_offset=t, h_offset=h,
                    release_first=self.release_var.get())
-        changed = any(new[k] != cfg.get(k) for k in new) or not os.path.exists(CONFIG_PATH)
+        changed = any(new[k] != cfg.get(k) for k in new) or not config_exists()
         if changed and not self.confirm_password():
             return
         cfg.update(new)
