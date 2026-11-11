@@ -14,8 +14,35 @@ Ket qua (da cong offset) ghi vao hazegarddata<yyyymmdd>.csv, moi ngay 1 file.
 
 Cai dat (cong COM, ten Line, thu muc luu, offset %T / %H):
   - nhap dup vao dong "Connected: ..." o tren cung, hoac bam F12
-  - luu trong file hazegard_config.json canh chuong trinh
+  - luu cai dat trong Registry Windows (HKCU\\Software\\Pilkington\\HazeGardLogger), khong tao file json
 """
+
+import sys as _sys, os as _os, traceback as _tb
+
+
+def _report_fatal(text):
+    """Exe --noconsole khong hien loi -> ghi hazegard_crash.log va bao bang hop thoai."""
+    try:
+        base = _os.path.dirname(_sys.executable if getattr(_sys, "frozen", False)
+                                else _os.path.abspath(__file__))
+        with open(_os.path.join(base, "hazegard_crash.log"), "a", encoding="utf-8") as f:
+            f.write(text + "\n")
+    except Exception:
+        pass
+    try:
+        import tkinter as _tk
+        from tkinter import messagebox as _mb
+        r = _tk.Tk(); r.withdraw()
+        _mb.showerror("HazeGard - loi khoi dong", text[-1500:])
+    except Exception:
+        pass
+
+
+def _excepthook(et, ev, tb):
+    _report_fatal("".join(_tb.format_exception(et, ev, tb)))
+
+
+_sys.excepthook = _excepthook
 
 import hashlib
 import json
@@ -35,7 +62,8 @@ try:
     import serial
     from serial.tools import list_ports
 except ImportError:
-    sys.exit("Chua cai pyserial. Chay: pip install pyserial")
+    _report_fatal("Chua cai pyserial. Chay: pip install pyserial")
+    sys.exit(1)
 
 if getattr(sys, "frozen", False):          # chay tu file .exe (PyInstaller)
     APP_DIR = os.path.dirname(sys.executable)
@@ -45,7 +73,25 @@ else:
 CONFIG_PATH = os.path.join(APP_DIR, "hazegard_config.json")
 RAW_LOG = os.path.join(APP_DIR, "hazegard_raw.log")
 DEFAULT_CONFIG = {"port": "", "line": "VGI3", "outdir": "",   # "" = thu muc chua chuong trinh
-                  "t_offset": 0.0, "h_offset": 0.0}
+                  "t_offset": 0.0, "h_offset": 0.0,
+                  "release_first": True,
+                  "model": "plus",      # "plus" (RS232) hoac "i" (USB qua BYKCommunication.dll)
+                  "i_ip": "",           # chi dien neu may i noi qua mang LAN
+                  "bg_image": "",       # duong dan anh nen (PNG/GIF/JPG...); "" = anh mac dinh
+                  "file_formats": ["default"]}   # 1-3 trong: default, ERS, Sequoia
+
+# Dinh dang ten file CSV: khoa -> ten he thong dung trong ten file ("" = hazegarddata<yyyymmdd>.csv)
+FILE_FORMATS = {"default": "", "ERS": "ERS", "Sequoia": "Sequoia"}
+FILE_FORMAT_LABELS = {"default": "Default  (hazegarddata<yyyymmdd>.csv)",
+                      "ERS": "ERS  (Hazegard_Data_ERS_<yyyymmdd>.csv)",
+                      "Sequoia": "Sequoia  (Hazegard_Data_Sequoia_<yyyymmdd>.csv)"}
+
+
+def normalize_formats(v):
+    """Loai gia tri la/trung, giu thu tu co dinh; rong -> ['default']."""
+    v = v if isinstance(v, (list, tuple)) else []
+    out = [k for k in FILE_FORMATS if k in v]
+    return out or ["default"]
 # Password xac nhan khi luu cai dat (chi luu ma bam SHA-256, khong luu chu ro)
 SETTINGS_PW_SHA256 = "f51413286fbac40dfc6e9c3757427acf784c86fd80b749f1ccb5d23de51414df"
 
@@ -62,17 +108,103 @@ C_WARN = "#c55a11"
 C_ERR = "#c00000"
 
 
-def load_config():
+REG_PATH = r"Software\Pilkington\HazeGardLogger"
+try:
+    import winreg                    # chi co tren Windows
+except ImportError:
+    winreg = None
+
+
+def _from_data(data):
     cfg = dict(DEFAULT_CONFIG)
+    cfg.update(data)
+    if "file_formats" not in data and str(data.get("file_system", "")).strip():
+        # file cau hinh ban truoc (1 ten he thong) -> doi sang lua chon moi
+        old = str(data["file_system"]).strip().lower()
+        cfg["file_formats"] = [k for k in FILE_FORMATS if k.lower() == old] or ["default"]
+    cfg.pop("file_system", None)
+    cfg["file_formats"] = normalize_formats(cfg.get("file_formats"))
+    return cfg
+
+
+def _reg_load():
+    """Doc cau hinh tu Registry; None neu chua co."""
+    if winreg is None:
+        return None
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH)
+    except OSError:
+        return None
+    data = {}
+    with key:
+        for name in DEFAULT_CONFIG:
+            try:
+                v, _ = winreg.QueryValueEx(key, name)
+            except OSError:
+                continue
+            d = DEFAULT_CONFIG[name]
+            try:
+                if isinstance(d, bool):
+                    v = bool(int(v))
+                elif isinstance(d, float):
+                    v = float(str(v).replace(",", "."))
+                elif isinstance(d, list):
+                    v = [x.strip() for x in str(v).split(",") if x.strip()]
+                else:
+                    v = str(v)
+            except ValueError:
+                continue
+            data[name] = v
+    return _from_data(data)
+
+
+def _reg_save(cfg):
+    key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_SET_VALUE)
+    with key:
+        for name, d in DEFAULT_CONFIG.items():
+            v = cfg.get(name, d)
+            if isinstance(d, bool):
+                winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, int(bool(v)))
+            elif isinstance(d, list):
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, ",".join(v))
+            else:
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, str(v))
+
+
+def config_exists():
+    """Da tung luu cai dat chua (lan dau chay -> luon hoi password khi bam Luu)."""
+    if winreg is not None:
+        try:
+            winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH))
+            return True
+        except OSError:
+            return False
+    return os.path.exists(CONFIG_PATH)
+
+
+def load_config():
+    """Windows: doc tu Registry (khong tao file json); neu chua co thi nhap file json cu (neu con).
+    He dieu hanh khac: dung hazegard_config.json."""
+    cfg = _reg_load()
+    if cfg is not None:
+        return cfg
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
-            cfg.update(json.load(f))
+            cfg = _from_data(json.load(f))
     except (OSError, ValueError):
-        pass
+        return _from_data({})
+    if winreg is not None:
+        try:
+            _reg_save(cfg)
+        except OSError:
+            pass
     return cfg
 
 
 def save_config(cfg):
+    if winreg is not None:
+        _reg_save(cfg)
+        return
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
@@ -85,9 +217,10 @@ def fmt_offset(v):
 #  Giao tiep voi may (chay o luong rieng, gui su kien ve giao dien qua queue)
 # =====================================================================
 class Instrument(threading.Thread):
-    def __init__(self, port, events):
+    def __init__(self, port, events, release_first=True):
         super().__init__(daemon=True)
         self.port = port
+        self.release_first = release_first
         self.q = events
         self.stop_evt = threading.Event()
         self.ser = None
@@ -111,6 +244,11 @@ class Instrument(threading.Thread):
 
         try:
             # 1) Thu vao online mode (lenh 4Fh)
+            if self.release_first:
+                # 0) Giai phong may dang ket o Online Mode (lenh 50h), roi moi handshake
+                self.ser.reset_input_buffer()
+                self.ser.write(bytes([hr.CMD_END]))
+                time.sleep(0.4)
             self.ser.reset_input_buffer()
             self.ser.write(bytes([hr.CMD_ONLINE]))
             resp, t0 = b"", time.time()
@@ -313,25 +451,45 @@ class HazeGardApp:
 
         self.ent_rn.focus_set()
 
+    def _load_picture(self, path):
+        """Doc anh va thu nho cho vua khung 560x280. PNG/GIF doc truc tiep; JPG/BMP... can Pillow."""
+        W, H = 560, 280
+        try:
+            from PIL import Image, ImageTk
+            im = Image.open(path)
+            im.thumbnail((W, H))
+            return ImageTk.PhotoImage(im)
+        except ImportError:
+            img = tk.PhotoImage(file=path)          # chi PNG / GIF
+            f = max(-(-img.width() // W), -(-img.height() // H), 1)
+            return img.subsample(f) if f > 1 else img
+
     def _draw_picture(self):
-        """Hien anh hazegard.png / .gif dat canh chuong trinh neu co; neu khong ve hinh minh hoa."""
+        """Anh nen: duong dan chon trong Cai dat (F12) -> hazegard.png/.gif/.jpg canh chuong trinh
+        -> hinh minh hoa mac dinh."""
         c = self.canvas
+        c.delete("all")
+        self._img = None
+        cands = []
+        chosen = (self.cfg.get("bg_image") or "").strip() if hasattr(self, "cfg") else ""
+        if chosen:
+            cands.append((chosen, True))
         for name in ("hazegard.png", "hazegard.gif", "hazegard.jpg"):
-            path = os.path.join(APP_DIR, name)
+            cands.append((os.path.join(APP_DIR, name), False))
+        for path, explicit in cands:
             if not os.path.exists(path):
+                if explicit:
+                    self._bg_error = f"Không thấy file ảnh nền:\n  {path}\n"
                 continue
             try:
-                try:
-                    from PIL import Image, ImageTk
-                    im = Image.open(path)
-                    im.thumbnail((560, 280))
-                    self._img = ImageTk.PhotoImage(im)
-                except ImportError:
-                    self._img = tk.PhotoImage(file=path)
+                self._img = self._load_picture(path)
                 c.create_image(280, 140, image=self._img)
                 return
-            except Exception:
-                pass
+            except Exception as e:                      # noqa: BLE001
+                if explicit:
+                    hint = ("" if path.lower().endswith((".png", ".gif"))
+                            else "\n(JPG/BMP cần bản exe có Pillow; hoặc đổi sang PNG)")
+                    self._bg_error = f"Không đọc được ảnh nền:\n  {path}\n  {e}{hint}\n"
         # Hinh minh hoa don gian: than may, cong do, gia kep mau
         blue, dark = "#2f86d1", "#1f5f99"
         c.create_rectangle(0, 240, 560, 280, fill="#d0d6dc", outline="")
@@ -352,14 +510,22 @@ class HazeGardApp:
         self.var["tcorr"].set(f"True: {fmt_offset(t)}" if t else "False: 0")
         self.var["hcorr"].set(f"True: {fmt_offset(h)}" if h else "False: 0")
         self.store = self.make_store()
+        self._bg_error = None
+        self._draw_picture()
+        if self._bg_error and hasattr(self, "log"):
+            self.write_log(self._bg_error + "\n", "warn")
+            self._bg_error = None
         self.update_conn_label()
         self.refresh_buttons()
+
+    def store_systems(self):
+        return [FILE_FORMATS[k] for k in normalize_formats(self.cfg.get("file_formats"))]
 
     def make_store(self):
         """Thu muc luu CSV; neu khong tao/ghi duoc (vd duong dan cua may khac) -> dung thu muc chuong trinh."""
         want = (self.cfg.get("outdir") or "").strip() or APP_DIR
         try:
-            store = hr.DailyCsv(want)
+            store = hr.DailyCsv(want, systems=self.store_systems())
             test = os.path.join(want, ".hazegard_write_test")
             open(test, "w").close()
             os.remove(test)
@@ -371,7 +537,7 @@ class HazeGardApp:
             if hasattr(self, "log"):
                 self.write_log(self._outdir_warning, "warn")
                 self._outdir_warning = None
-            return hr.DailyCsv(APP_DIR)
+            return hr.DailyCsv(APP_DIR, systems=self.store_systems())
 
     def update_conn_label(self):
         if self.connected:
@@ -392,13 +558,19 @@ class HazeGardApp:
         self.update_conn_label()
         for k in ("address", "serial", "device"):
             self.var[k].set("")
+        self.set_status("đang kết nối ...", C_WARN)
+        if self.cfg.get("model") == "i":
+            import hazegard_i
+            self.inst = hazegard_i.InstrumentI(self.events, APP_DIR, RAW_LOG,
+                                               self.cfg.get("i_ip", ""))
+            self.inst.start()
+            return
         port = self.cfg.get("port", "")
         if not port:
             self.set_status("chưa chọn cổng COM", C_ERR)
             self.open_settings()
             return
-        self.set_status("đang kết nối ...", C_WARN)
-        self.inst = Instrument(port, self.events)
+        self.inst = Instrument(port, self.events, bool(self.cfg.get("release_first", True)))
         self.inst.start()
 
     # ---------- vi tri do ----------
@@ -444,6 +616,9 @@ class HazeGardApp:
         return None
 
     def trigger_measure(self):
+        if self.cfg.get("model") == "i":
+            self.set_status("máy i: đo trực tiếp trên máy", C_WARN)
+            return
         if not (self.inst and self.inst.online):
             self.set_status("bấm operate trên máy", C_WARN)
             return
@@ -490,10 +665,15 @@ class HazeGardApp:
         self.set_status("port haze", C_OK)
 
     def save_row(self, now, tc, hc, row):
-        try:
-            self.store.write(now, tc, hc, **row)
-        except OSError:
-            self.pending.append((now, tc, hc, row))
+        """Ghi vao tung file da chon; file nao loi (dang mo trong Excel) se ghi bu sau."""
+        failed = False
+        for path in self.store.paths_for(now):
+            try:
+                self.store.write_to(path, now, tc, hc, **row)
+            except OSError:
+                self.pending.append((path, now, tc, hc, row))
+                failed = True
+        if failed:
             self.write_log("!! Không ghi được file CSV (đang mở trong Excel?). "
                            "Sẽ tự ghi lại khi đóng file.\n", "err")
 
@@ -501,7 +681,7 @@ class HazeGardApp:
         still = []
         for item in self.pending:
             try:
-                self.store.write(item[0], item[1], item[2], **item[3])
+                self.store.write_to(item[0], item[1], item[2], item[3], **item[4])
             except OSError:
                 still.append(item)
         if self.pending and not still:
@@ -532,8 +712,19 @@ class HazeGardApp:
     def on_connected(self, info):
         self.connected = True
         self.update_conn_label()
-        self.var["address"].set(self.cfg["port"])
         st = info["status"]
+        if info.get("model") == "i":
+            self.var["address"].set("USB / " + (self.cfg.get("i_ip") or "auto"))
+            self.var["serial"].set(info.get("serial", ""))
+            self.var["device"].set(info.get("identifier", ""))
+            self.chk["T"].set(True)
+            self.chk["H"].set(True)
+            self.chk["C"].set(False)
+            self.chk["CONT"].set(False)
+            self.write_log("Kết nối máy haze-gard i. Đo trực tiếp trên máy.\n\n")
+            self.set_status("port haze", C_OK)
+            return
+        self.var["address"].set(self.cfg["port"])
         if info["online"] and st:
             mode = st[1]
             self.chk["T"].set(mode in (0, 3, 4, 6))
@@ -596,25 +787,58 @@ class SettingsDialog(tk.Toplevel):
                   "outdir": tk.StringVar(value=cfg.get("outdir") or APP_DIR),
                   "t_offset": tk.StringVar(value=fmt_offset(float(cfg["t_offset"]))),
                   "h_offset": tk.StringVar(value=fmt_offset(float(cfg["h_offset"])))}
+        self.release_var = tk.BooleanVar(value=bool(cfg.get("release_first", True)))
+        self.v["model"] = tk.StringVar(value="i" if cfg.get("model") == "i" else "plus")
+        self.v["i_ip"] = tk.StringVar(value=cfg.get("i_ip", ""))
+        self.v["bg_image"] = tk.StringVar(value=cfg.get("bg_image", ""))
+        self.fmt_vars = {k: tk.BooleanVar(value=k in normalize_formats(cfg.get("file_formats")))
+                         for k in FILE_FORMATS}
         ports = [p.device for p in list_ports.comports()]
-        rows = [("Cổng COM", "port"), ("Line", "line"), ("Thư mục lưu CSV", "outdir"),
+        rows = [("Đời máy", "model"), ("Cổng COM (plus)", "port"), ("IP máy i (tuỳ chọn)", "i_ip"),
+                ("Line", "line"), ("Thư mục lưu CSV", "outdir"), ("Ảnh nền (PNG/GIF/JPG)", "bg_image"),
                 ("%T offset", "t_offset"), ("%H offset", "h_offset")]
         for i, (txt, key) in enumerate(rows):
-            tk.Label(self, text=txt, anchor="e", width=14).grid(row=i, column=0, padx=6, pady=4)
-            if key == "port":
+            tk.Label(self, text=txt, anchor="e", width=18).grid(row=i, column=0, padx=6, pady=4)
+            if key == "model":
+                w = ttk.Combobox(self, textvariable=self.v[key], values=["plus", "i"],
+                                 width=30, state="readonly")
+            elif key == "port":
                 w = ttk.Combobox(self, textvariable=self.v[key], values=ports, width=30)
             else:
                 w = tk.Entry(self, textvariable=self.v[key], width=33)
             w.grid(row=i, column=1, sticky="w", pady=4)
             if key == "outdir":
                 tk.Button(self, text="...", command=self.browse).grid(row=i, column=2, padx=4)
-        tk.Label(self, text="Kết quả ghi vào CSV = giá trị máy đo + offset",
-                 fg="#666").grid(row=len(rows), column=0, columnspan=3, pady=(4, 0))
+            if key == "bg_image":
+                bf = tk.Frame(self)
+                bf.grid(row=i, column=2, padx=4)
+                tk.Button(bf, text="...", command=self.browse_bg).pack(side="left")
+                tk.Button(bf, text="Mặc định", command=lambda: self.v["bg_image"].set("")
+                          ).pack(side="left", padx=(2, 0))
+        ff = tk.LabelFrame(self, text="Định dạng tên file CSV (chọn 1–3)")
+        ff.grid(row=len(rows), column=0, columnspan=3, sticky="we", padx=8, pady=(6, 2))
+        for k in FILE_FORMATS:
+            tk.Checkbutton(ff, text=FILE_FORMAT_LABELS[k], variable=self.fmt_vars[k],
+                           anchor="w").pack(fill="x", padx=6)
+        tk.Checkbutton(self, text="Giải phóng máy đang kẹt Online Mode khi khởi động (gửi 50h)",
+                       variable=self.release_var).grid(row=len(rows) + 1, column=0, columnspan=3,
+                                                       sticky="w", padx=8)
+        tk.Label(self, text="Kết quả ghi vào CSV = giá trị máy đo + offset\n"
+                            "Chọn nhiều định dạng → mỗi lần đo ghi vào tất cả các file đã chọn",
+                 fg="#666", justify="left").grid(row=len(rows) + 2, column=0, columnspan=3,
+                                                 pady=(4, 0))
         f = tk.Frame(self)
-        f.grid(row=len(rows) + 1, column=0, columnspan=3, pady=8)
+        f.grid(row=len(rows) + 3, column=0, columnspan=3, pady=8)
         tk.Button(f, text="Lưu & kết nối", width=14, command=self.save).pack(side="left", padx=6)
         tk.Button(f, text="Hủy", width=8, command=self.destroy).pack(side="left", padx=6)
         self.grab_set()
+
+    def browse_bg(self):
+        f = filedialog.askopenfilename(
+            parent=self, title="Chọn ảnh nền",
+            filetypes=[("Ảnh", "*.png *.gif *.jpg *.jpeg *.bmp"), ("Tất cả", "*.*")])
+        if f:
+            self.v["bg_image"].set(f)
 
     def browse(self):
         d = filedialog.askdirectory(parent=self, initialdir=self.v["outdir"].get() or APP_DIR)
@@ -628,6 +852,10 @@ class SettingsDialog(tk.Toplevel):
         except ValueError:
             messagebox.showerror("Cài đặt", "Offset phải là số, vd -0.6", parent=self)
             return
+        if not any(v.get() for v in self.fmt_vars.values()):
+            messagebox.showerror("Cài đặt", "Phải chọn ít nhất 1 định dạng tên file "
+                                            "(Default, ERS hoặc Sequoia).", parent=self)
+            return
         outdir = self.v["outdir"].get().strip() or APP_DIR
         try:
             os.makedirs(outdir, exist_ok=True)
@@ -635,11 +863,15 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showerror("Cài đặt", f"Không tạo được thư mục:\n{e}", parent=self)
             return
         cfg = self.app.cfg
-        new = dict(port=self.v["port"].get().strip(), line=self.v["line"].get().strip(),
+        new = dict(model=self.v["model"].get(), i_ip=self.v["i_ip"].get().strip(),
+                   bg_image=self.v["bg_image"].get().strip(),
+                   file_formats=[k for k in FILE_FORMATS if self.fmt_vars[k].get()],
+                   port=self.v["port"].get().strip(), line=self.v["line"].get().strip(),
                    outdir="" if os.path.normcase(os.path.abspath(outdir)) ==
                    os.path.normcase(APP_DIR) else outdir,
-                   t_offset=t, h_offset=h)
-        changed = any(new[k] != cfg.get(k) for k in new) or not os.path.exists(CONFIG_PATH)
+                   t_offset=t, h_offset=h,
+                   release_first=self.release_var.get())
+        changed = any(new[k] != cfg.get(k) for k in new) or not config_exists()
         if changed and not self.confirm_password():
             return
         cfg.update(new)
@@ -666,9 +898,12 @@ class SettingsDialog(tk.Toplevel):
 
 
 def main():
-    root = tk.Tk()
-    HazeGardApp(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        HazeGardApp(root)
+        root.mainloop()
+    except Exception:
+        _report_fatal(_tb.format_exc())
 
 
 if __name__ == "__main__":

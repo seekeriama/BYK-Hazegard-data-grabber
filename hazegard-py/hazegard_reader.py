@@ -131,23 +131,47 @@ def fmt_num(v, nd):
     return "" if v is None else f"{v:.{nd}f}"
 
 
+def clean_system_name(name):
+    """Ten he thong dung trong ten file: bo ky tu khong hop le, khoang trang -> _ ."""
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", str(name or "")).strip()
+    return re.sub(r"\s+", "_", name)
+
+
 class DailyCsv:
     """Ghi moi ngay 1 file hazegarddata<yyyymmdd>.csv, chi chua du lieu cua ngay do.
     Ten file lay theo ngay cua tung lan do nen qua nua dem tu dong sang file moi."""
 
-    def __init__(self, outdir=".", **extras):
+    def __init__(self, outdir=".", system="", systems=None, **extras):
         self.outdir = outdir
+        # Moi phan tu: "" -> hazegarddata<yyyymmdd>.csv ; "ERS" -> Hazegard_Data_ERS_<yyyymmdd>.csv
+        # Nhieu phan tu -> moi lan do ghi vao TAT CA cac file.
+        names = list(systems) if systems else [system]
+        self.systems = []
+        for n in names:
+            n = clean_system_name(n)
+            if n not in self.systems:
+                self.systems.append(n)
         self.extras = {"line": "", "run_number": "", "run_minute": "", "position": "",
                        "t_offset": "", "h_offset": ""}
         self.extras.update({k: v for k, v in extras.items() if v is not None})
         os.makedirs(outdir, exist_ok=True)
 
-    def path_for(self, dt):
-        return os.path.join(self.outdir, f"hazegarddata{dt:%Y%m%d}.csv")
+    def paths_for(self, dt):
+        out = []
+        for sysname in self.systems:
+            if sysname:
+                name = f"Hazegard_Data_{sysname}_{dt:%Y%m%d}.csv"
+            else:
+                name = f"hazegarddata{dt:%Y%m%d}.csv"
+            out.append(os.path.join(self.outdir, name))
+        return out
 
-    def write(self, dt, t, h, **override):
+    def path_for(self, dt):
+        return self.paths_for(dt)[0]
+
+    def write_to(self, path, dt, t, h, **override):
+        """Ghi 1 dong vao 1 file cu the (tao file + tieu de neu chua co)."""
         e = {**self.extras, **override}
-        path = self.path_for(dt)
         new = not os.path.exists(path) or os.path.getsize(path) == 0
         row = [e["line"], dt.strftime("%d/%m/%Y %H:%M:%S"), e["run_number"],
                e["run_minute"],                   # ghi dang so (vd 540), khong co =" "
@@ -158,6 +182,19 @@ class DailyCsv:
             # O trong ghi la "" (co dau nhay) de Excel/LibreOffice khong gop cac dau phay lien tiep
             f.write(",".join('""' if str(x) == "" else str(x) for x in row) + "\r\n")
         return path
+
+    def write(self, dt, t, h, **override):
+        """Ghi vao tat ca cac file da chon; tra ve duong dan file dau tien.
+        Neu co file loi (dang mo trong Excel) van ghi cac file con lai roi nem OSError."""
+        first_err = None
+        for path in self.paths_for(dt):
+            try:
+                self.write_to(path, dt, t, h, **override)
+            except OSError as e:
+                first_err = first_err or e
+        if first_err:
+            raise first_err
+        return self.path_for(dt)
 
 
 def convert_old_csv(path, store):
