@@ -74,7 +74,9 @@ CONFIG_PATH = os.path.join(APP_DIR, "hazegard_config.json")
 RAW_LOG = os.path.join(APP_DIR, "hazegard_raw.log")
 DEFAULT_CONFIG = {"port": "", "line": "VGI3", "outdir": "",   # "" = thu muc chua chuong trinh
                   "t_offset": 0.0, "h_offset": 0.0,
-                  "release_first": True}
+                  "release_first": True,
+                  "model": "plus",      # "plus" (RS232) hoac "i" (USB qua BYKCommunication.dll)
+                  "i_ip": ""}           # chi dien neu may i noi qua mang LAN
 # Password xac nhan khi luu cai dat (chi luu ma bam SHA-256, khong luu chu ro)
 SETTINGS_PW_SHA256 = "f51413286fbac40dfc6e9c3757427acf784c86fd80b749f1ccb5d23de51414df"
 
@@ -427,12 +429,18 @@ class HazeGardApp:
         self.update_conn_label()
         for k in ("address", "serial", "device"):
             self.var[k].set("")
+        self.set_status("đang kết nối ...", C_WARN)
+        if self.cfg.get("model") == "i":
+            import hazegard_i
+            self.inst = hazegard_i.InstrumentI(self.events, APP_DIR, RAW_LOG,
+                                               self.cfg.get("i_ip", ""))
+            self.inst.start()
+            return
         port = self.cfg.get("port", "")
         if not port:
             self.set_status("chưa chọn cổng COM", C_ERR)
             self.open_settings()
             return
-        self.set_status("đang kết nối ...", C_WARN)
         self.inst = Instrument(port, self.events, bool(self.cfg.get("release_first", True)))
         self.inst.start()
 
@@ -479,6 +487,9 @@ class HazeGardApp:
         return None
 
     def trigger_measure(self):
+        if self.cfg.get("model") == "i":
+            self.set_status("máy i: đo trực tiếp trên máy", C_WARN)
+            return
         if not (self.inst and self.inst.online):
             self.set_status("bấm operate trên máy", C_WARN)
             return
@@ -567,8 +578,19 @@ class HazeGardApp:
     def on_connected(self, info):
         self.connected = True
         self.update_conn_label()
-        self.var["address"].set(self.cfg["port"])
         st = info["status"]
+        if info.get("model") == "i":
+            self.var["address"].set("USB / " + (self.cfg.get("i_ip") or "auto"))
+            self.var["serial"].set(info.get("serial", ""))
+            self.var["device"].set(info.get("identifier", ""))
+            self.chk["T"].set(True)
+            self.chk["H"].set(True)
+            self.chk["C"].set(False)
+            self.chk["CONT"].set(False)
+            self.write_log("Kết nối máy haze-gard i. Đo trực tiếp trên máy.\n\n")
+            self.set_status("port haze", C_OK)
+            return
+        self.var["address"].set(self.cfg["port"])
         if info["online"] and st:
             mode = st[1]
             self.chk["T"].set(mode in (0, 3, 4, 6))
@@ -632,12 +654,18 @@ class SettingsDialog(tk.Toplevel):
                   "t_offset": tk.StringVar(value=fmt_offset(float(cfg["t_offset"]))),
                   "h_offset": tk.StringVar(value=fmt_offset(float(cfg["h_offset"])))}
         self.release_var = tk.BooleanVar(value=bool(cfg.get("release_first", True)))
+        self.v["model"] = tk.StringVar(value="i" if cfg.get("model") == "i" else "plus")
+        self.v["i_ip"] = tk.StringVar(value=cfg.get("i_ip", ""))
         ports = [p.device for p in list_ports.comports()]
-        rows = [("Cổng COM", "port"), ("Line", "line"), ("Thư mục lưu CSV", "outdir"),
+        rows = [("Đời máy", "model"), ("Cổng COM (plus)", "port"), ("IP máy i (tuỳ chọn)", "i_ip"),
+                ("Line", "line"), ("Thư mục lưu CSV", "outdir"),
                 ("%T offset", "t_offset"), ("%H offset", "h_offset")]
         for i, (txt, key) in enumerate(rows):
-            tk.Label(self, text=txt, anchor="e", width=14).grid(row=i, column=0, padx=6, pady=4)
-            if key == "port":
+            tk.Label(self, text=txt, anchor="e", width=18).grid(row=i, column=0, padx=6, pady=4)
+            if key == "model":
+                w = ttk.Combobox(self, textvariable=self.v[key], values=["plus", "i"],
+                                 width=30, state="readonly")
+            elif key == "port":
                 w = ttk.Combobox(self, textvariable=self.v[key], values=ports, width=30)
             else:
                 w = tk.Entry(self, textvariable=self.v[key], width=33)
@@ -674,7 +702,8 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showerror("Cài đặt", f"Không tạo được thư mục:\n{e}", parent=self)
             return
         cfg = self.app.cfg
-        new = dict(port=self.v["port"].get().strip(), line=self.v["line"].get().strip(),
+        new = dict(model=self.v["model"].get(), i_ip=self.v["i_ip"].get().strip(),
+                   port=self.v["port"].get().strip(), line=self.v["line"].get().strip(),
                    outdir="" if os.path.normcase(os.path.abspath(outdir)) ==
                    os.path.normcase(APP_DIR) else outdir,
                    t_offset=t, h_offset=h,
