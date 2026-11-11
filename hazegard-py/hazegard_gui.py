@@ -76,8 +76,21 @@ DEFAULT_CONFIG = {"port": "", "line": "VGI3", "outdir": "",   # "" = thu muc chu
                   "t_offset": 0.0, "h_offset": 0.0,
                   "release_first": True,
                   "model": "plus",      # "plus" (RS232) hoac "i" (USB qua BYKCommunication.dll)
-                  "i_ip": "",
-                  "file_system": ""}     # "" = hazegarddata<yyyymmdd>; "ERS" -> Hazegard_Data_ERS_<yyyymmdd>           # chi dien neu may i noi qua mang LAN
+                  "i_ip": "",           # chi dien neu may i noi qua mang LAN
+                  "file_formats": ["default"]}   # 1-3 trong: default, ERS, Sequoia
+
+# Dinh dang ten file CSV: khoa -> ten he thong dung trong ten file ("" = hazegarddata<yyyymmdd>.csv)
+FILE_FORMATS = {"default": "", "ERS": "ERS", "Sequoia": "Sequoia"}
+FILE_FORMAT_LABELS = {"default": "Default  (hazegarddata<yyyymmdd>.csv)",
+                      "ERS": "ERS  (Hazegard_Data_ERS_<yyyymmdd>.csv)",
+                      "Sequoia": "Sequoia  (Hazegard_Data_Sequoia_<yyyymmdd>.csv)"}
+
+
+def normalize_formats(v):
+    """Loai gia tri la/trung, giu thu tu co dinh; rong -> ['default']."""
+    v = v if isinstance(v, (list, tuple)) else []
+    out = [k for k in FILE_FORMATS if k in v]
+    return out or ["default"]
 # Password xac nhan khi luu cai dat (chi luu ma bam SHA-256, khong luu chu ro)
 SETTINGS_PW_SHA256 = "f51413286fbac40dfc6e9c3757427acf784c86fd80b749f1ccb5d23de51414df"
 
@@ -98,9 +111,16 @@ def load_config():
     cfg = dict(DEFAULT_CONFIG)
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
-            cfg.update(json.load(f))
+            data = json.load(f)
+        cfg.update(data)
+        if "file_formats" not in data and str(data.get("file_system", "")).strip():
+            # file cau hinh ban truoc (1 ten he thong) -> doi sang lua chon moi
+            old = str(data["file_system"]).strip().lower()
+            cfg["file_formats"] = [k for k in FILE_FORMATS if k.lower() == old] or ["default"]
     except (OSError, ValueError):
         pass
+    cfg.pop("file_system", None)
+    cfg["file_formats"] = normalize_formats(cfg.get("file_formats"))
     return cfg
 
 
@@ -393,11 +413,14 @@ class HazeGardApp:
         self.update_conn_label()
         self.refresh_buttons()
 
+    def store_systems(self):
+        return [FILE_FORMATS[k] for k in normalize_formats(self.cfg.get("file_formats"))]
+
     def make_store(self):
         """Thu muc luu CSV; neu khong tao/ghi duoc (vd duong dan cua may khac) -> dung thu muc chuong trinh."""
         want = (self.cfg.get("outdir") or "").strip() or APP_DIR
         try:
-            store = hr.DailyCsv(want, system=self.cfg.get("file_system", ""))
+            store = hr.DailyCsv(want, systems=self.store_systems())
             test = os.path.join(want, ".hazegard_write_test")
             open(test, "w").close()
             os.remove(test)
@@ -409,7 +432,7 @@ class HazeGardApp:
             if hasattr(self, "log"):
                 self.write_log(self._outdir_warning, "warn")
                 self._outdir_warning = None
-            return hr.DailyCsv(APP_DIR, system=self.cfg.get("file_system", ""))
+            return hr.DailyCsv(APP_DIR, systems=self.store_systems())
 
     def update_conn_label(self):
         if self.connected:
@@ -537,10 +560,15 @@ class HazeGardApp:
         self.set_status("port haze", C_OK)
 
     def save_row(self, now, tc, hc, row):
-        try:
-            self.store.write(now, tc, hc, **row)
-        except OSError:
-            self.pending.append((now, tc, hc, row))
+        """Ghi vao tung file da chon; file nao loi (dang mo trong Excel) se ghi bu sau."""
+        failed = False
+        for path in self.store.paths_for(now):
+            try:
+                self.store.write_to(path, now, tc, hc, **row)
+            except OSError:
+                self.pending.append((path, now, tc, hc, row))
+                failed = True
+        if failed:
             self.write_log("!! Không ghi được file CSV (đang mở trong Excel?). "
                            "Sẽ tự ghi lại khi đóng file.\n", "err")
 
@@ -548,7 +576,7 @@ class HazeGardApp:
         still = []
         for item in self.pending:
             try:
-                self.store.write(item[0], item[1], item[2], **item[3])
+                self.store.write_to(item[0], item[1], item[2], item[3], **item[4])
             except OSError:
                 still.append(item)
         if self.pending and not still:
@@ -657,10 +685,11 @@ class SettingsDialog(tk.Toplevel):
         self.release_var = tk.BooleanVar(value=bool(cfg.get("release_first", True)))
         self.v["model"] = tk.StringVar(value="i" if cfg.get("model") == "i" else "plus")
         self.v["i_ip"] = tk.StringVar(value=cfg.get("i_ip", ""))
-        self.v["file_system"] = tk.StringVar(value=cfg.get("file_system", ""))
+        self.fmt_vars = {k: tk.BooleanVar(value=k in normalize_formats(cfg.get("file_formats")))
+                         for k in FILE_FORMATS}
         ports = [p.device for p in list_ports.comports()]
         rows = [("Đời máy", "model"), ("Cổng COM (plus)", "port"), ("IP máy i (tuỳ chọn)", "i_ip"),
-                ("Line", "line"), ("Thư mục lưu CSV", "outdir"), ("Tên hệ thống (file)", "file_system"),
+                ("Line", "line"), ("Thư mục lưu CSV", "outdir"),
                 ("%T offset", "t_offset"), ("%H offset", "h_offset")]
         for i, (txt, key) in enumerate(rows):
             tk.Label(self, text=txt, anchor="e", width=18).grid(row=i, column=0, padx=6, pady=4)
@@ -674,16 +703,20 @@ class SettingsDialog(tk.Toplevel):
             w.grid(row=i, column=1, sticky="w", pady=4)
             if key == "outdir":
                 tk.Button(self, text="...", command=self.browse).grid(row=i, column=2, padx=4)
+        ff = tk.LabelFrame(self, text="Định dạng tên file CSV (chọn 1–3)")
+        ff.grid(row=len(rows), column=0, columnspan=3, sticky="we", padx=8, pady=(6, 2))
+        for k in FILE_FORMATS:
+            tk.Checkbutton(ff, text=FILE_FORMAT_LABELS[k], variable=self.fmt_vars[k],
+                           anchor="w").pack(fill="x", padx=6)
         tk.Checkbutton(self, text="Giải phóng máy đang kẹt Online Mode khi khởi động (gửi 50h)",
-                       variable=self.release_var).grid(row=len(rows), column=0, columnspan=3,
+                       variable=self.release_var).grid(row=len(rows) + 1, column=0, columnspan=3,
                                                        sticky="w", padx=8)
         tk.Label(self, text="Kết quả ghi vào CSV = giá trị máy đo + offset\n"
-                            "Tên hệ thống trống → hazegarddata<yyyymmdd>.csv ; "
-                            "vd ERS → Hazegard_Data_ERS_<yyyymmdd>.csv",
-                 fg="#666", justify="left").grid(row=len(rows) + 1, column=0, columnspan=3,
+                            "Chọn nhiều định dạng → mỗi lần đo ghi vào tất cả các file đã chọn",
+                 fg="#666", justify="left").grid(row=len(rows) + 2, column=0, columnspan=3,
                                                  pady=(4, 0))
         f = tk.Frame(self)
-        f.grid(row=len(rows) + 2, column=0, columnspan=3, pady=8)
+        f.grid(row=len(rows) + 3, column=0, columnspan=3, pady=8)
         tk.Button(f, text="Lưu & kết nối", width=14, command=self.save).pack(side="left", padx=6)
         tk.Button(f, text="Hủy", width=8, command=self.destroy).pack(side="left", padx=6)
         self.grab_set()
@@ -700,6 +733,10 @@ class SettingsDialog(tk.Toplevel):
         except ValueError:
             messagebox.showerror("Cài đặt", "Offset phải là số, vd -0.6", parent=self)
             return
+        if not any(v.get() for v in self.fmt_vars.values()):
+            messagebox.showerror("Cài đặt", "Phải chọn ít nhất 1 định dạng tên file "
+                                            "(Default, ERS hoặc Sequoia).", parent=self)
+            return
         outdir = self.v["outdir"].get().strip() or APP_DIR
         try:
             os.makedirs(outdir, exist_ok=True)
@@ -708,7 +745,7 @@ class SettingsDialog(tk.Toplevel):
             return
         cfg = self.app.cfg
         new = dict(model=self.v["model"].get(), i_ip=self.v["i_ip"].get().strip(),
-                   file_system=hr.clean_system_name(self.v["file_system"].get()),
+                   file_formats=[k for k in FILE_FORMATS if self.fmt_vars[k].get()],
                    port=self.v["port"].get().strip(), line=self.v["line"].get().strip(),
                    outdir="" if os.path.normcase(os.path.abspath(outdir)) ==
                    os.path.normcase(APP_DIR) else outdir,

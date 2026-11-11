@@ -29,7 +29,9 @@ Có thể bấm **Run workflow** để build lại bất cứ lúc nào, ví d�
 
 ## Tên file CSV theo hệ thống
 
-Trong Cài đặt, ô **Tên hệ thống (file)**:
-- để trống → `hazegarddata<yyyymmdd>.csv` (như cũ)
-- điền `ERS` → `Hazegard_Data_ERS_<yyyymmdd>.csv`; điền `Sequoia` → `Hazegard_Data_Sequoia_<yyyymmdd>.csv`
-Khoảng trắng được đổi thành `_`, ký tự không hợp lệ trong tên file bị bỏ. Cấu trúc cột bên trong giữ nguyên.
+Trong Cài đặt (F12), nhóm **Định dạng tên file CSV** có 3 ô chọn, bắt buộc chọn ít nhất 1, tối đa cả 3:
+- **Default** → `hazegarddata<yyyymmdd>.csv`
+- **ERS** → `Hazegard_Data_ERS_<yyyymmdd>.csv`
+- **Sequoia** → `Hazegard_Data_Sequoia_<yyyymmdd>.csv`
+
+Chọn nhiều định dạng thì mỗi lần đo được ghi vào tất cả các file đã chọn. Nếu một file đang mở trong Excel, chương trình vẫn ghi các file còn lại và tự ghi bù file kia khi đóng. Cấu trúc cột bên trong giữ nguyên.
