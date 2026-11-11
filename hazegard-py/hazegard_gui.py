@@ -17,6 +17,33 @@ Cai dat (cong COM, ten Line, thu muc luu, offset %T / %H):
   - luu trong file hazegard_config.json canh chuong trinh
 """
 
+import sys as _sys, os as _os, traceback as _tb
+
+
+def _report_fatal(text):
+    """Exe --noconsole khong hien loi -> ghi hazegard_crash.log va bao bang hop thoai."""
+    try:
+        base = _os.path.dirname(_sys.executable if getattr(_sys, "frozen", False)
+                                else _os.path.abspath(__file__))
+        with open(_os.path.join(base, "hazegard_crash.log"), "a", encoding="utf-8") as f:
+            f.write(text + "\n")
+    except Exception:
+        pass
+    try:
+        import tkinter as _tk
+        from tkinter import messagebox as _mb
+        r = _tk.Tk(); r.withdraw()
+        _mb.showerror("HazeGard - loi khoi dong", text[-1500:])
+    except Exception:
+        pass
+
+
+def _excepthook(et, ev, tb):
+    _report_fatal("".join(_tb.format_exception(et, ev, tb)))
+
+
+_sys.excepthook = _excepthook
+
 import hashlib
 import json
 import os
@@ -35,7 +62,8 @@ try:
     import serial
     from serial.tools import list_ports
 except ImportError:
-    sys.exit("Chua cai pyserial. Chay: pip install pyserial")
+    _report_fatal("Chua cai pyserial. Chay: pip install pyserial")
+    sys.exit(1)
 
 if getattr(sys, "frozen", False):          # chay tu file .exe (PyInstaller)
     APP_DIR = os.path.dirname(sys.executable)
@@ -45,7 +73,10 @@ else:
 CONFIG_PATH = os.path.join(APP_DIR, "hazegard_config.json")
 RAW_LOG = os.path.join(APP_DIR, "hazegard_raw.log")
 DEFAULT_CONFIG = {"port": "", "line": "VGI3", "outdir": "",   # "" = thu muc chua chuong trinh
-                  "t_offset": 0.0, "h_offset": 0.0}
+                  "t_offset": 0.0, "h_offset": 0.0,
+                  "release_first": True,
+                  "model": "plus",      # "plus" (RS232) hoac "i" (USB qua BYKCommunication.dll)
+                  "i_ip": ""}           # chi dien neu may i noi qua mang LAN
 # Password xac nhan khi luu cai dat (chi luu ma bam SHA-256, khong luu chu ro)
 SETTINGS_PW_SHA256 = "f51413286fbac40dfc6e9c3757427acf784c86fd80b749f1ccb5d23de51414df"
 
@@ -85,9 +116,10 @@ def fmt_offset(v):
 #  Giao tiep voi may (chay o luong rieng, gui su kien ve giao dien qua queue)
 # =====================================================================
 class Instrument(threading.Thread):
-    def __init__(self, port, events):
+    def __init__(self, port, events, release_first=True):
         super().__init__(daemon=True)
         self.port = port
+        self.release_first = release_first
         self.q = events
         self.stop_evt = threading.Event()
         self.ser = None
@@ -111,6 +143,11 @@ class Instrument(threading.Thread):
 
         try:
             # 1) Thu vao online mode (lenh 4Fh)
+            if self.release_first:
+                # 0) Giai phong may dang ket o Online Mode (lenh 50h), roi moi handshake
+                self.ser.reset_input_buffer()
+                self.ser.write(bytes([hr.CMD_END]))
+                time.sleep(0.4)
             self.ser.reset_input_buffer()
             self.ser.write(bytes([hr.CMD_ONLINE]))
             resp, t0 = b"", time.time()
@@ -392,13 +429,19 @@ class HazeGardApp:
         self.update_conn_label()
         for k in ("address", "serial", "device"):
             self.var[k].set("")
+        self.set_status("đang kết nối ...", C_WARN)
+        if self.cfg.get("model") == "i":
+            import hazegard_i
+            self.inst = hazegard_i.InstrumentI(self.events, APP_DIR, RAW_LOG,
+                                               self.cfg.get("i_ip", ""))
+            self.inst.start()
+            return
         port = self.cfg.get("port", "")
         if not port:
             self.set_status("chưa chọn cổng COM", C_ERR)
             self.open_settings()
             return
-        self.set_status("đang kết nối ...", C_WARN)
-        self.inst = Instrument(port, self.events)
+        self.inst = Instrument(port, self.events, bool(self.cfg.get("release_first", True)))
         self.inst.start()
 
     # ---------- vi tri do ----------
@@ -444,6 +487,9 @@ class HazeGardApp:
         return None
 
     def trigger_measure(self):
+        if self.cfg.get("model") == "i":
+            self.set_status("máy i: đo trực tiếp trên máy", C_WARN)
+            return
         if not (self.inst and self.inst.online):
             self.set_status("bấm operate trên máy", C_WARN)
             return
@@ -532,8 +578,19 @@ class HazeGardApp:
     def on_connected(self, info):
         self.connected = True
         self.update_conn_label()
-        self.var["address"].set(self.cfg["port"])
         st = info["status"]
+        if info.get("model") == "i":
+            self.var["address"].set("USB / " + (self.cfg.get("i_ip") or "auto"))
+            self.var["serial"].set(info.get("serial", ""))
+            self.var["device"].set(info.get("identifier", ""))
+            self.chk["T"].set(True)
+            self.chk["H"].set(True)
+            self.chk["C"].set(False)
+            self.chk["CONT"].set(False)
+            self.write_log("Kết nối máy haze-gard i. Đo trực tiếp trên máy.\n\n")
+            self.set_status("port haze", C_OK)
+            return
+        self.var["address"].set(self.cfg["port"])
         if info["online"] and st:
             mode = st[1]
             self.chk["T"].set(mode in (0, 3, 4, 6))
@@ -596,22 +653,32 @@ class SettingsDialog(tk.Toplevel):
                   "outdir": tk.StringVar(value=cfg.get("outdir") or APP_DIR),
                   "t_offset": tk.StringVar(value=fmt_offset(float(cfg["t_offset"]))),
                   "h_offset": tk.StringVar(value=fmt_offset(float(cfg["h_offset"])))}
+        self.release_var = tk.BooleanVar(value=bool(cfg.get("release_first", True)))
+        self.v["model"] = tk.StringVar(value="i" if cfg.get("model") == "i" else "plus")
+        self.v["i_ip"] = tk.StringVar(value=cfg.get("i_ip", ""))
         ports = [p.device for p in list_ports.comports()]
-        rows = [("Cổng COM", "port"), ("Line", "line"), ("Thư mục lưu CSV", "outdir"),
+        rows = [("Đời máy", "model"), ("Cổng COM (plus)", "port"), ("IP máy i (tuỳ chọn)", "i_ip"),
+                ("Line", "line"), ("Thư mục lưu CSV", "outdir"),
                 ("%T offset", "t_offset"), ("%H offset", "h_offset")]
         for i, (txt, key) in enumerate(rows):
-            tk.Label(self, text=txt, anchor="e", width=14).grid(row=i, column=0, padx=6, pady=4)
-            if key == "port":
+            tk.Label(self, text=txt, anchor="e", width=18).grid(row=i, column=0, padx=6, pady=4)
+            if key == "model":
+                w = ttk.Combobox(self, textvariable=self.v[key], values=["plus", "i"],
+                                 width=30, state="readonly")
+            elif key == "port":
                 w = ttk.Combobox(self, textvariable=self.v[key], values=ports, width=30)
             else:
                 w = tk.Entry(self, textvariable=self.v[key], width=33)
             w.grid(row=i, column=1, sticky="w", pady=4)
             if key == "outdir":
                 tk.Button(self, text="...", command=self.browse).grid(row=i, column=2, padx=4)
+        tk.Checkbutton(self, text="Giải phóng máy đang kẹt Online Mode khi khởi động (gửi 50h)",
+                       variable=self.release_var).grid(row=len(rows), column=0, columnspan=3,
+                                                       sticky="w", padx=8)
         tk.Label(self, text="Kết quả ghi vào CSV = giá trị máy đo + offset",
-                 fg="#666").grid(row=len(rows), column=0, columnspan=3, pady=(4, 0))
+                 fg="#666").grid(row=len(rows) + 1, column=0, columnspan=3, pady=(4, 0))
         f = tk.Frame(self)
-        f.grid(row=len(rows) + 1, column=0, columnspan=3, pady=8)
+        f.grid(row=len(rows) + 2, column=0, columnspan=3, pady=8)
         tk.Button(f, text="Lưu & kết nối", width=14, command=self.save).pack(side="left", padx=6)
         tk.Button(f, text="Hủy", width=8, command=self.destroy).pack(side="left", padx=6)
         self.grab_set()
@@ -635,10 +702,12 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showerror("Cài đặt", f"Không tạo được thư mục:\n{e}", parent=self)
             return
         cfg = self.app.cfg
-        new = dict(port=self.v["port"].get().strip(), line=self.v["line"].get().strip(),
+        new = dict(model=self.v["model"].get(), i_ip=self.v["i_ip"].get().strip(),
+                   port=self.v["port"].get().strip(), line=self.v["line"].get().strip(),
                    outdir="" if os.path.normcase(os.path.abspath(outdir)) ==
                    os.path.normcase(APP_DIR) else outdir,
-                   t_offset=t, h_offset=h)
+                   t_offset=t, h_offset=h,
+                   release_first=self.release_var.get())
         changed = any(new[k] != cfg.get(k) for k in new) or not os.path.exists(CONFIG_PATH)
         if changed and not self.confirm_password():
             return
@@ -666,9 +735,12 @@ class SettingsDialog(tk.Toplevel):
 
 
 def main():
-    root = tk.Tk()
-    HazeGardApp(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        HazeGardApp(root)
+        root.mainloop()
+    except Exception:
+        _report_fatal(_tb.format_exc())
 
 
 if __name__ == "__main__":
