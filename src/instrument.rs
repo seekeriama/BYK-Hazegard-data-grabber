@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone)]
 pub enum Event {
     Connected { online: bool, status: Option<Status> },
+    /// Máy haze-gard i (USB/mạng qua BYKCommunication.dll)
+    ConnectedI { serial: String, identifier: String },
     Result { t: Option<f64>, h: Option<f64> },
     PortSwitch,
     Error(String),
@@ -19,6 +21,26 @@ pub enum Event {
 
 enum Cmd {
     Operate,
+}
+
+/// Giao diện chung cho máy plus (RS232) và máy i (DLL).
+pub trait Device {
+    fn is_online(&self) -> bool;
+    /// Gửi lệnh đo từ PC (chỉ máy plus; máy i đo trực tiếp trên máy)
+    fn operate(&self);
+    fn stop(&mut self);
+}
+
+impl Device for Instrument {
+    fn is_online(&self) -> bool {
+        Instrument::is_online(self)
+    }
+    fn operate(&self) {
+        Instrument::operate(self)
+    }
+    fn stop(&mut self) {
+        Instrument::stop(self)
+    }
 }
 
 pub struct Instrument {

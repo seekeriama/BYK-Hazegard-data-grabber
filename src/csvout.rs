@@ -19,6 +19,17 @@ pub struct RowInfo {
     pub h_offset: String,
 }
 
+fn dedup_systems(v: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for s in v {
+        let c = clean_system_name(&s);
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    if out.is_empty() { vec![String::new()] } else { out }
+}
+
 /// Giống `%g` của Python: -0.6 -> "-0.6", 0 -> "0", -10 -> "-10"
 pub fn fmt_offset(v: f64) -> String {
     if v.fract() == 0.0 {
@@ -37,25 +48,51 @@ fn cell(s: &str) -> String {
     if s.is_empty() { "\"\"".to_string() } else { s.to_string() }
 }
 
+/// Tên hệ thống dùng trong tên file: bỏ ký tự không hợp lệ, khoảng trắng -> `_`.
+pub fn clean_system_name(name: &str) -> String {
+    let t: String = name.chars().filter(|c| !matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') && !c.is_control()).collect();
+    t.split_whitespace().collect::<Vec<_>>().join("_")
+}
+
 #[derive(Debug, Clone)]
 pub struct DailyCsv {
     pub outdir: PathBuf,
+    /// "" -> hazegarddata<yyyymmdd>.csv ; "ERS" -> Hazegard_Data_ERS_<yyyymmdd>.csv.
+    /// Nhiều phần tử -> mỗi lần đo ghi vào TẤT CẢ các file.
+    pub systems: Vec<String>,
 }
 
 impl DailyCsv {
     pub fn new(outdir: impl Into<PathBuf>) -> std::io::Result<Self> {
+        Self::with_systems(outdir, vec![String::new()])
+    }
+
+    pub fn with_systems(outdir: impl Into<PathBuf>, systems: Vec<String>) -> std::io::Result<Self> {
         let outdir = outdir.into();
         std::fs::create_dir_all(&outdir)?;
-        Ok(Self { outdir })
+        Ok(Self { outdir, systems: dedup_systems(systems) })
+    }
+
+    pub fn paths_for(&self, dt: &NaiveDateTime) -> Vec<PathBuf> {
+        self.systems
+            .iter()
+            .map(|s| {
+                if s.is_empty() {
+                    self.outdir.join(format!("hazegarddata{}.csv", dt.format("%Y%m%d")))
+                } else {
+                    self.outdir.join(format!("Hazegard_Data_{}_{}.csv", s, dt.format("%Y%m%d")))
+                }
+            })
+            .collect()
     }
 
     pub fn path_for(&self, dt: &NaiveDateTime) -> PathBuf {
-        self.outdir.join(format!("hazegarddata{}.csv", dt.format("%Y%m%d")))
+        self.paths_for(dt).remove(0)
     }
 
-    pub fn write(&self, dt: &NaiveDateTime, t: Option<f64>, h: Option<f64>, e: &RowInfo) -> std::io::Result<PathBuf> {
-        let path = self.path_for(dt);
-        let is_new = std::fs::metadata(&path).map(|m| m.len() == 0).unwrap_or(true);
+    /// Ghi 1 dòng vào 1 file cụ thể (tạo file + tiêu đề nếu chưa có).
+    pub fn write_to(&self, path: &Path, dt: &NaiveDateTime, t: Option<f64>, h: Option<f64>, e: &RowInfo) -> std::io::Result<()> {
+        let is_new = std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(true);
         let cells = [
             cell(&e.line),
             dt.format("%d/%m/%Y %H:%M:%S").to_string(),
@@ -67,7 +104,7 @@ impl DailyCsv {
             cell(&e.t_offset),
             cell(&e.h_offset),
         ];
-        let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut f = OpenOptions::new().create(true).append(true).open(path)?;
         let mut buf = String::new();
         if is_new {
             buf.push_str(CSV_HEADER);
@@ -75,8 +112,21 @@ impl DailyCsv {
         }
         buf.push_str(&cells.join(","));
         buf.push_str("\r\n");
-        f.write_all(buf.as_bytes())?;
-        Ok(path)
+        f.write_all(buf.as_bytes())
+    }
+
+    /// Ghi vào tất cả các file đã chọn; file lỗi (đang mở trong Excel) không chặn file khác, lỗi đầu tiên được trả về.
+    pub fn write(&self, dt: &NaiveDateTime, t: Option<f64>, h: Option<f64>, e: &RowInfo) -> std::io::Result<PathBuf> {
+        let mut first_err = None;
+        for p in self.paths_for(dt) {
+            if let Err(er) = self.write_to(&p, dt, t, h, e) {
+                first_err.get_or_insert(er);
+            }
+        }
+        match first_err {
+            Some(er) => Err(er),
+            None => Ok(self.path_for(dt)),
+        }
     }
 
     /// Kiểm tra thư mục ghi được (tạo rồi xoá file thử).

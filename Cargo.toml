@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 chrono = "0.4.45"
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "wgpu", "x11", "clipboard"] }
+libloading = "0.8"
+roxmltree = "0.20"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -15,9 +17,14 @@ sha2 = "0.11.1"
 
 [target."cfg(windows)".dependencies]
 rfd = "0.17.2"
+winreg = "0.55"
 
 [profile.release]
 opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
+
+[features]
+# Nhúng assets/BYKCommunication.dll vào exe (bản 32-bit)
+embed_dll = []

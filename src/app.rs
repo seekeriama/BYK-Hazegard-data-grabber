@@ -1,8 +1,9 @@
 //! Giao diện Haze Gard (egui)
 
-use crate::config::{self, Config};
+use crate::config::{self, Config, ConfigStore, FILE_FORMATS};
 use crate::csvout::{DailyCsv, RowInfo, fmt_offset};
-use crate::instrument::{Event, Instrument};
+use crate::instrument::{Device, Event, Instrument};
+use crate::instrument_i::InstrumentI;
 use chrono::{Local, NaiveDateTime};
 use eframe::egui::{self, Color32, FontData, FontFamily, RichText, Vec2};
 use std::path::PathBuf;
@@ -48,6 +49,10 @@ struct SettingsState {
     t_offset: String,
     h_offset: String,
     release_first: bool,
+    model: String,
+    i_ip: String,
+    bg_image: String,
+    formats: [bool; 3],
     ports: Vec<String>,
     error: Option<String>,
 }
@@ -59,17 +64,18 @@ struct PwState {
     focus: bool,
 }
 
-type PendingRow = (NaiveDateTime, Option<f64>, Option<f64>, RowInfo);
+/// (file đích, thời điểm, T, H, dòng) – mỗi file đang bị khoá được thử ghi lại riêng
+type PendingRow = (PathBuf, NaiveDateTime, Option<f64>, Option<f64>, RowInfo);
 
 pub struct HazeGardApp {
     ctx: egui::Context,
     app_dir: PathBuf,
-    cfg_path: PathBuf,
+    cfg_store: ConfigStore,
     cfg: Config,
     store: DailyCsv,
     events_tx: Sender<Event>,
     events_rx: Receiver<Event>,
-    inst: Option<Instrument>,
+    inst: Option<Box<dyn Device>>,
     connected: bool,
 
     address: String,
@@ -129,16 +135,27 @@ fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-fn load_picture(ctx: &egui::Context, dir: &std::path::Path) -> Option<egui::TextureHandle> {
-    for name in ["hazegard.png", "hazegard.jpg", "hazegard.jpeg"] {
-        if let Ok(img) = image::open(dir.join(name)) {
-            let rgba = img.to_rgba8();
-            let size = [rgba.width() as usize, rgba.height() as usize];
-            let ci = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-            return Some(ctx.load_texture("hazegard_pic", ci, Default::default()));
+fn load_picture(ctx: &egui::Context, dir: &std::path::Path, custom: &str) -> (Option<egui::TextureHandle>, Option<String>) {
+    let try_open = |path: &std::path::Path| -> Result<egui::TextureHandle, String> {
+        let img = image::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let rgba = img.to_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let ci = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+        Ok(ctx.load_texture("hazegard_pic", ci, Default::default()))
+    };
+    let mut err = None;
+    if !custom.trim().is_empty() {
+        match try_open(std::path::Path::new(custom.trim())) {
+            Ok(t) => return (Some(t), None),
+            Err(e) => err = Some(e),
         }
     }
-    None
+    for name in ["hazegard.png", "hazegard.jpg", "hazegard.jpeg"] {
+        if let Ok(t) = try_open(&dir.join(name)) {
+            return (Some(t), err);
+        }
+    }
+    (None, err)
 }
 
 impl HazeGardApp {
@@ -156,15 +173,15 @@ impl HazeGardApp {
             s.text_styles.insert(egui::TextStyle::Monospace, egui::FontId::new(13.0, FontFamily::Monospace));
         });
         let app_dir = app_dir();
-        let cfg_path = app_dir.join("hazegard_config.json");
-        let cfg = Config::load(&cfg_path);
+        let cfg_store = ConfigStore::default_for(&app_dir);
+        let cfg = cfg_store.load();
         let (events_tx, events_rx) = channel();
-        let texture = load_picture(&ctx, &app_dir);
+        let (texture, pic_err) = load_picture(&ctx, &app_dir, &cfg.bg_image);
         let mut app = Self {
             ctx,
-            store: DailyCsv { outdir: app_dir.clone() },
+            store: DailyCsv { outdir: app_dir.clone(), systems: vec![String::new()] },
             app_dir,
-            cfg_path,
+            cfg_store,
             cfg,
             events_tx,
             events_rx,
@@ -190,6 +207,9 @@ impl HazeGardApp {
             exit_confirm: false,
             allow_close: false,
         };
+        if let Some(e) = pic_err {
+            app.write_log(&format!("Không đọc được ảnh nền: {e}\n"), Kind::Warn);
+        }
         app.store = app.make_store();
         app.start_connection();
         app
@@ -200,7 +220,7 @@ impl HazeGardApp {
     fn make_store(&mut self) -> DailyCsv {
         let want = self.cfg.outdir_or(&self.app_dir);
         if DailyCsv::writable(&want) {
-            return DailyCsv { outdir: want };
+            return DailyCsv { outdir: want, systems: self.cfg.systems() };
         }
         self.write_log(
             &format!(
@@ -209,12 +229,18 @@ impl HazeGardApp {
             ),
             Kind::Warn,
         );
-        DailyCsv { outdir: self.app_dir.clone() }
+        DailyCsv { outdir: self.app_dir.clone(), systems: self.cfg.systems() }
     }
 
     fn save_row(&mut self, now: NaiveDateTime, t: Option<f64>, h: Option<f64>, row: RowInfo) {
-        if self.store.write(&now, t, h, &row).is_err() {
-            self.pending.push((now, t, h, row));
+        let mut failed = false;
+        for p in self.store.paths_for(&now) {
+            if self.store.write_to(&p, &now, t, h, &row).is_err() {
+                self.pending.push((p, now, t, h, row.clone()));
+                failed = true;
+            }
+        }
+        if failed {
             self.write_log(
                 "!! Không ghi được file CSV (đang mở trong Excel?). Sẽ tự ghi lại khi đóng file.\n",
                 Kind::Err,
@@ -229,7 +255,7 @@ impl HazeGardApp {
         let items = std::mem::take(&mut self.pending);
         let n = items.len();
         for it in items {
-            if self.store.write(&it.0, it.1, it.2, &it.3).is_err() {
+            if self.store.write_to(&it.0, &it.1, it.2, it.3, &it.4).is_err() {
                 self.pending.push(it);
             }
         }
@@ -247,6 +273,19 @@ impl HazeGardApp {
         self.address.clear();
         self.serial.clear();
         self.device.clear();
+        let ctx = self.ctx.clone();
+        if self.cfg.model == "i" {
+            self.set_status("đang kết nối máy i ...", Kind::Warn);
+            self.inst = InstrumentI::start_dll(
+                &self.app_dir,
+                self.events_tx.clone(),
+                self.app_dir.join("hazegard_raw.log"),
+                self.cfg.i_ip.clone(),
+                move || ctx.request_repaint(),
+            )
+            .map(|i| Box::new(i) as Box<dyn Device>);
+            return;
+        }
         let port = self.cfg.port.trim().to_string();
         if port.is_empty() {
             self.set_status("chưa chọn cổng COM", Kind::Err);
@@ -254,14 +293,23 @@ impl HazeGardApp {
             return;
         }
         self.set_status("đang kết nối ...", Kind::Warn);
-        let ctx = self.ctx.clone();
-        self.inst = Some(Instrument::start(
+        self.inst = Some(Box::new(Instrument::start(
             port,
             self.events_tx.clone(),
             self.app_dir.join("hazegard_raw.log"),
             self.cfg.release_first,
             move || ctx.request_repaint(),
-        ));
+        )));
+    }
+
+    fn on_connected_i(&mut self, serial: String, identifier: String) {
+        self.connected = true;
+        self.address = identifier;
+        self.serial = serial;
+        self.device = "haze-gard i".into();
+        self.chk = [true, true, false, false];
+        self.write_log("Kết nối máy i. Bấm đo trực tiếp trên máy, kết quả tự ghi vào CSV.\n\n", Kind::Normal);
+        self.set_status("port haze", Kind::Ok);
     }
 
     fn on_connected(&mut self, online: bool, status: Option<crate::protocol::Status>) {
@@ -319,6 +367,10 @@ impl HazeGardApp {
     }
 
     pub fn trigger_measure(&mut self) {
+        if self.cfg.model == "i" {
+            self.set_status("máy i: bấm đo trên máy", Kind::Warn);
+            return;
+        }
         let online = self.inst.as_ref().is_some_and(|i| i.is_online());
         if !online {
             self.set_status("bấm operate trên máy", Kind::Warn);
@@ -396,6 +448,7 @@ impl HazeGardApp {
         while let Ok(ev) = self.events_rx.try_recv() {
             match ev {
                 Event::Connected { online, status } => self.on_connected(online, status),
+                Event::ConnectedI { serial, identifier } => self.on_connected_i(serial, identifier),
                 Event::Result { t, h } => self.on_result(t, h),
                 Event::PortSwitch => self.set_status("port clarity", Kind::Warn),
                 Event::Error(e) => {
@@ -420,6 +473,17 @@ impl HazeGardApp {
             t_offset: fmt_offset(self.cfg.t_offset),
             h_offset: fmt_offset(self.cfg.h_offset),
             release_first: self.cfg.release_first,
+            model: self.cfg.model.clone(),
+            i_ip: self.cfg.i_ip.clone(),
+            bg_image: self.cfg.bg_image.clone(),
+            formats: {
+                let sel = config::normalize_formats(&self.cfg.file_formats);
+                let mut f = [false; 3];
+                for (i, (k, _)) in FILE_FORMATS.iter().enumerate() {
+                    f[i] = sel.iter().any(|x| x == k);
+                }
+                f
+            },
             ports,
             error: None,
         });
@@ -435,6 +499,10 @@ impl HazeGardApp {
                 return;
             }
         };
+        if !s.formats.iter().any(|&x| x) {
+            s.error = Some("Phải chọn ít nhất 1 định dạng tên file.".into());
+            return;
+        }
         let outdir = if s.outdir.trim().is_empty() { self.app_dir.clone() } else { PathBuf::from(s.outdir.trim()) };
         if let Err(e) = std::fs::create_dir_all(&outdir) {
             s.error = Some(format!("Không tạo được thư mục: {e}"));
@@ -448,9 +516,13 @@ impl HazeGardApp {
             t_offset: t,
             h_offset: h,
             release_first: s.release_first,
+            model: if s.model == "i" { "i".into() } else { "plus".into() },
+            i_ip: s.i_ip.trim().to_string(),
+            bg_image: s.bg_image.trim().to_string(),
+            file_formats: FILE_FORMATS.iter().enumerate().filter(|(i, _)| s.formats[*i]).map(|(_, (k, _))| k.to_string()).collect(),
         };
         s.error = None;
-        let changed = new != self.cfg || !self.cfg_path.exists();
+        let changed = new != self.cfg || !self.cfg_store.exists();
         if changed {
             self.pw = Some(PwState { input: String::new(), error: None, pending: new, focus: true });
         } else {
@@ -474,8 +546,13 @@ impl HazeGardApp {
 
     fn apply_config(&mut self, new: Config) {
         self.cfg = new;
-        if let Err(e) = self.cfg.save(&self.cfg_path) {
-            self.write_log(&format!("Không lưu được file cấu hình: {e}\n"), Kind::Err);
+        if let Err(e) = self.cfg_store.save(&self.cfg) {
+            self.write_log(&format!("Không lưu được cấu hình: {e}\n"), Kind::Err);
+        }
+        let (tex, err) = load_picture(&self.ctx, &self.app_dir, &self.cfg.bg_image);
+        self.texture = tex;
+        if let Some(e) = err {
+            self.write_log(&format!("Không đọc được ảnh nền: {e}\n"), Kind::Warn);
         }
         self.store = self.make_store();
         self.settings = None;
@@ -668,20 +745,34 @@ impl HazeGardApp {
         if let Some(s) = self.settings.as_mut() {
             egui::Window::new("Cài đặt").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).enabled(!pw_open).show(ctx, |ui| {
                 egui::Grid::new("settings").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-                    ui.label("Cổng COM");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut s.port).desired_width(120.0));
-                        let ports = s.ports.clone();
-                        egui::ComboBox::from_id_salt("ports").selected_text("chọn").show_ui(ui, |ui| {
-                            if ports.is_empty() {
-                                ui.label("(không thấy cổng COM)");
-                            }
-                            for p in ports {
-                                ui.selectable_value(&mut s.port, p.clone(), p);
-                            }
+                    ui.label("Đời máy");
+                    egui::ComboBox::from_id_salt("model")
+                        .selected_text(if s.model == "i" { "haze-gard i (USB)" } else { "haze-gard plus (RS232)" })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut s.model, "plus".to_string(), "haze-gard plus (RS232)");
+                            ui.selectable_value(&mut s.model, "i".to_string(), "haze-gard i (USB)");
                         });
-                    });
                     ui.end_row();
+                    if s.model == "i" {
+                        ui.label("IP máy i (nếu qua LAN)");
+                        ui.add(egui::TextEdit::singleline(&mut s.i_ip).desired_width(260.0));
+                        ui.end_row();
+                    } else {
+                        ui.label("Cổng COM");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut s.port).desired_width(120.0));
+                            let ports = s.ports.clone();
+                            egui::ComboBox::from_id_salt("ports").selected_text("chọn").show_ui(ui, |ui| {
+                                if ports.is_empty() {
+                                    ui.label("(không thấy cổng COM)");
+                                }
+                                for p in ports {
+                                    ui.selectable_value(&mut s.port, p.clone(), p);
+                                }
+                            });
+                        });
+                        ui.end_row();
+                    }
                     ui.label("Line");
                     ui.add(egui::TextEdit::singleline(&mut s.line).desired_width(260.0));
                     ui.end_row();
@@ -696,6 +787,20 @@ impl HazeGardApp {
                         }
                     });
                     ui.end_row();
+                    ui.label("Ảnh nền");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut s.bg_image).desired_width(150.0));
+                        #[cfg(windows)]
+                        if ui.button("...").clicked() {
+                            if let Some(f) = rfd::FileDialog::new().add_filter("Ảnh", &["png", "jpg", "jpeg", "bmp", "gif"]).pick_file() {
+                                s.bg_image = f.display().to_string();
+                            }
+                        }
+                        if ui.button("Mặc định").clicked() {
+                            s.bg_image.clear();
+                        }
+                    });
+                    ui.end_row();
                     ui.label("%T offset");
                     ui.add(egui::TextEdit::singleline(&mut s.t_offset).desired_width(260.0));
                     ui.end_row();
@@ -704,6 +809,15 @@ impl HazeGardApp {
                     ui.end_row();
                 });
                 ui.add_space(4.0);
+                ui.group(|ui| {
+                    ui.label("Định dạng tên file CSV (chọn 1-3):");
+                    ui.horizontal(|ui| {
+                        let labels = ["Default (hazegarddata…)", "ERS", "Sequoia"];
+                        for (i, l) in labels.iter().enumerate() {
+                            ui.checkbox(&mut s.formats[i], *l);
+                        }
+                    });
+                });
                 ui.checkbox(&mut s.release_first, "Giải phóng máy đang kẹt Online Mode khi khởi động (gửi 50h)");
                 ui.label(RichText::new("Kết quả ghi vào CSV = giá trị máy đo + offset").color(Color32::GRAY));
                 if let Some(e) = &s.error {
@@ -844,10 +958,11 @@ mod tests {
     #[test]
     fn settings_need_password() {
         let mut app = HazeGardApp::with_context(egui::Context::default());
-        app.cfg_path = std::env::temp_dir().join(format!("hz_cfg_{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&app.cfg_path);
+        let cfg_path = std::env::temp_dir().join(format!("hz_cfg_{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&cfg_path);
+        app.cfg_store = ConfigStore::Json(cfg_path.clone());
         app.app_dir = std::env::temp_dir();
-        app.cfg = Config { port: String::new(), line: "VGI3".into(), outdir: String::new(), t_offset: 0.0, h_offset: 0.0, release_first: true };
+        app.cfg = Config::default();
         app.settings = None;
 
         app.open_settings();
@@ -864,20 +979,20 @@ mod tests {
         app.submit_password();
         assert!(app.pw.as_ref().unwrap().error.is_some());
         assert_eq!(app.cfg.t_offset, 0.0, "sai password khong duoc luu");
-        assert!(!app.cfg_path.exists());
+        assert!(!cfg_path.exists());
 
         // dung password
         app.pw.as_mut().unwrap().input = "ZZCARROT".into();
         app.submit_password();
         assert!(app.pw.is_none() && app.settings.is_none());
         assert_eq!((app.cfg.port.as_str(), app.cfg.t_offset), ("COMX", -0.6));
-        let saved = Config::load(&app.cfg_path);
+        let saved = app.cfg_store.load();
         assert_eq!((saved.port.as_str(), saved.t_offset), ("COMX", -0.6));
 
         // mo lai, khong doi gi -> khong hoi password
         app.open_settings();
         app.try_save_settings();
         assert!(app.pw.is_none() && app.settings.is_none());
-        let _ = std::fs::remove_file(&app.cfg_path);
+        let _ = std::fs::remove_file(&cfg_path);
     }
 }
