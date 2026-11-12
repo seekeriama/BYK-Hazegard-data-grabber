@@ -74,7 +74,7 @@ fn main() -> eframe::Result {
     let outdir = out.join("csv");
     std::fs::write(dir.join("hazegard_config.json"), format!(r#"{{"port":"{name}","line":"VGI3","outdir":{:?},"t_offset":-0.6,"h_offset":0}}"#, outdir.display().to_string())).unwrap();
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([700.0, 700.0]).with_resizable(false),
+        viewport: egui::ViewportBuilder::default().with_inner_size([560.0, 640.0]).with_min_inner_size([470.0, 560.0]),
         ..Default::default()
     };
     eframe::run_native("Haze Gard", options, Box::new(move |cc| Ok(Box::new(Wrap { app: HazeGardApp::new(cc), t0: Instant::now(), step: 0, out, pending_name: None }))))

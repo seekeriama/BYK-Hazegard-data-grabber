@@ -562,7 +562,9 @@ impl HazeGardApp {
 
     // ---------- vẽ ----------
     fn draw_picture(&self, ui: &mut egui::Ui) {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(560.0, 280.0), egui::Sense::hover());
+        let w = ui.available_width().clamp(300.0, 560.0);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(w, w * 0.4), egui::Sense::hover());
+        let sc = (w / 560.0).min(rect.height() / 280.0); // hình minh hoạ vẽ ở khung 560x280 rồi co vừa khung
         let p = ui.painter_at(rect);
         p.rect_filled(rect, 0.0, Color32::from_rgb(0xee, 0xf3, 0xf8));
         if let Some(tex) = &self.texture {
@@ -572,20 +574,20 @@ impl HazeGardApp {
             p.image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
             return;
         }
-        let o = rect.min.to_vec2();
-        let r = |x0: f32, y0: f32, x1: f32, y1: f32| egui::Rect::from_min_max(egui::pos2(x0, y0) + o, egui::pos2(x1, y1) + o);
-        let c = |x: f32, y: f32| egui::pos2(x, y) + o;
+        let o = rect.min.to_vec2() + Vec2::new((rect.width() - 560.0 * sc) / 2.0, (rect.height() - 280.0 * sc) / 2.0);
+        let r = |x0: f32, y0: f32, x1: f32, y1: f32| egui::Rect::from_min_max(egui::pos2(x0 * sc, y0 * sc) + o, egui::pos2(x1 * sc, y1 * sc) + o);
+        let c = |x: f32, y: f32| egui::pos2(x * sc, y * sc) + o;
         let (blue, dark) = (Color32::from_rgb(0x2f, 0x86, 0xd1), Color32::from_rgb(0x1f, 0x5f, 0x99));
         p.rect_filled(r(0.0, 240.0, 560.0, 280.0), 0.0, Color32::from_rgb(0xd0, 0xd6, 0xdc));
         p.rect_filled(r(60.0, 222.0, 500.0, 240.0), 0.0, Color32::from_rgb(0x8a, 0x90, 0x99));
         p.rect_filled(r(30.0, 50.0, 230.0, 245.0), 0.0, blue);
         p.rect_filled(r(55.0, 75.0, 165.0, 160.0), 0.0, Color32::from_rgb(0x4a, 0x4f, 0x57));
-        p.circle_filled(c(195.0, 120.0), 15.0, Color32::from_rgb(0xe8, 0xe8, 0xe8));
-        p.rect_filled(r(222.0, 95.0, 262.0, 175.0), 16.0, dark);
+        p.circle_filled(c(195.0, 120.0), 15.0 * sc, Color32::from_rgb(0xe8, 0xe8, 0xe8));
+        p.rect_filled(r(222.0, 95.0, 262.0, 175.0), 16.0 * sc, dark);
         p.rect_filled(r(360.0, 50.0, 530.0, 245.0), 0.0, blue);
-        p.rect_filled(r(330.0, 80.0, 380.0, 190.0), 25.0, dark);
+        p.rect_filled(r(330.0, 80.0, 380.0, 190.0), 25.0 * sc, dark);
         p.rect_filled(r(296.0, 120.0, 304.0, 222.0), 0.0, Color32::from_rgb(0x22, 0x22, 0x22));
-        p.rect_stroke(r(282.0, 100.0, 318.0, 180.0), 18.0, egui::Stroke::new(4.0, Color32::from_rgb(0x22, 0x22, 0x22)), egui::StrokeKind::Inside);
+        p.rect_stroke(r(282.0, 100.0, 318.0, 180.0), 18.0 * sc, egui::Stroke::new(4.0 * sc, Color32::from_rgb(0x22, 0x22, 0x22)), egui::StrokeKind::Inside);
         p.rect_filled(r(278.0, 205.0, 322.0, 222.0), 0.0, Color32::from_rgb(0x33, 0x33, 0x33));
     }
 
@@ -611,16 +613,16 @@ impl HazeGardApp {
         ui.horizontal_top(|ui| {
             // --- cột trái ---
             ui.vertical(|ui| {
-                ui.set_width(300.0);
+                ui.set_width(225.0);
                 egui::Grid::new("fields").num_columns(2).spacing([8.0, 5.0]).show(ui, |ui| {
                     let ro = |ui: &mut egui::Ui, label: &str, text: &str, w: f32| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(label));
                         ui.add(egui::TextEdit::singleline(&mut text.to_string().as_str()).desired_width(w).align(egui::Align2::CENTER_CENTER));
                         ui.end_row();
                     };
-                    ro(ui, "Address", &self.address, 170.0);
-                    ro(ui, "Serial #", &self.serial, 170.0);
-                    ro(ui, "Device ID", &self.device, 190.0);
+                    ro(ui, "Address", &self.address, 130.0);
+                    ro(ui, "Serial #", &self.serial, 130.0);
+                    ro(ui, "Device ID", &self.device, 125.0);
 
                     ui.label("");
                     ui.horizontal(|ui| {
@@ -640,10 +642,10 @@ impl HazeGardApp {
                     ui.end_row();
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label("RunNumber"));
-                    ui.add_enabled(!locked, egui::TextEdit::singleline(&mut self.run_number).desired_width(170.0));
+                    ui.add_enabled(!locked, egui::TextEdit::singleline(&mut self.run_number).desired_width(115.0));
                     ui.end_row();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label("RunMinute"));
-                    let r = ui.add_enabled(!locked, egui::TextEdit::singleline(&mut self.run_minute).desired_width(170.0));
+                    let r = ui.add_enabled(!locked, egui::TextEdit::singleline(&mut self.run_minute).desired_width(115.0));
                     if self.focus_run_minute {
                         r.request_focus();
                         self.focus_run_minute = false;
@@ -663,7 +665,7 @@ impl HazeGardApp {
                     let corr = |v: f64, nd: &str| if v != 0.0 { format!("True: {}", fmt_offset(v)) } else { format!("False: {nd}") };
                     for (label, v) in [("%T Corrected", self.cfg.t_offset), ("%H Corrected", self.cfg.h_offset)] {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(label));
-                        let r = ui.add(egui::TextEdit::singleline(&mut corr(v, "0").as_str()).desired_width(170.0).align(egui::Align2::CENTER_CENTER));
+                        let r = ui.add(egui::TextEdit::singleline(&mut corr(v, "0").as_str()).desired_width(115.0).align(egui::Align2::CENTER_CENTER));
                         if r.double_clicked() {
                             self.open_settings();
                         }
@@ -674,9 +676,11 @@ impl HazeGardApp {
 
             // --- cột giữa: nhật ký ---
             let dark_text = ui.visuals().text_color();
+            let log_w = (ui.available_width() - 88.0).max(120.0);
+            let log_h = (ui.available_height() - 50.0).max(200.0);
             egui::Frame::new().fill(Color32::WHITE).stroke(egui::Stroke::new(1.0, Color32::GRAY)).inner_margin(4.0).show(ui, |ui| {
-                ui.set_width(250.0);
-                ui.set_height(300.0);
+                ui.set_width(log_w - 10.0);
+                ui.set_height(log_h);
                 egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
                     // ScrollArea thừa hưởng layout ngang của hàng cha -> ép xếp dọc
                     ui.vertical(|ui| {
@@ -725,14 +729,14 @@ impl HazeGardApp {
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.add_space(160.0);
-            if ui.add(egui::Button::new("Exit").min_size(Vec2::new(110.0, 26.0))).clicked() {
+            ui.add_space(40.0);
+            if ui.add(egui::Button::new("Exit").min_size(Vec2::new(80.0, 26.0))).clicked() {
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            ui.add_space(20.0);
+            ui.add_space(10.0);
             let (txt, kind) = self.status.clone();
-            ui.add_sized([210.0, 26.0], egui::Label::new(RichText::new(txt).strong().size(16.0).color(kind.color(Color32::BLACK))));
-            if ui.add(egui::Button::new("Clear").min_size(Vec2::new(130.0, 26.0))).clicked() {
+            ui.add_sized([150.0, 26.0], egui::Label::new(RichText::new(txt).strong().size(16.0).color(kind.color(Color32::BLACK))));
+            if ui.add(egui::Button::new("Clear").min_size(Vec2::new(90.0, 26.0))).clicked() {
                 self.clear();
             }
         });

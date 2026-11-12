@@ -47,9 +47,9 @@ fn run_gui(as_child: bool) -> i32 {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Haze Gard")
-            .with_inner_size([700.0, 700.0])
-            .with_resizable(false)
-            .with_maximize_button(false),
+            .with_inner_size([560.0, 640.0])
+            .with_min_inner_size([470.0, 560.0])
+            .with_resizable(true),
         ..Default::default()
     };
     match eframe::run_native("Haze Gard", options, Box::new(|cc| Ok(Box::new(HazeGardApp::new(cc))))) {
