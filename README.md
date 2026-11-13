@@ -4,7 +4,7 @@ Phần mềm nhận kết quả đo từ BYK haze-gard **plus (RS232)** và **ha
 mỗi ngày 1 file. Chức năng giống bản Python `hazegard_gui.py`.
 
 - **Tên file CSV** (chọn 1–3 trong Cài đặt, chọn nhiều thì ghi vào tất cả): Default `hazegarddata<yyyymmdd>.csv`,
-  ERS `Hazegard_Data_ERS_<yyyymmdd>.csv`, Sequoia `Hazegard_Data_Sequoia_<yyyymmdd>.csv`.
+  ERS `Hazegard Data ERS <yyyymmdd>.csv`, Sequoia `Hazegard Data Sequoia <yyyymmdd>.csv` (có dấu cách, không có dấu gạch dưới).
 - **Lưu cài đặt**: trên Windows lưu trong **Registry** (`HKEY_CURRENT_USER\Software\Pilkington\HazeGardLogger`),
   KHÔNG tạo file json. Nếu cạnh exe còn `hazegard_config.json` cũ và Registry chưa có thì tự nhập vào Registry.
   Muốn xoá cài đặt: xoá khoá Registry trên (hoặc `reg delete HKCU\Software\Pilkington\HazeGardLogger /f`).

@@ -57,7 +57,7 @@ pub fn clean_system_name(name: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct DailyCsv {
     pub outdir: PathBuf,
-    /// "" -> hazegarddata<yyyymmdd>.csv ; "ERS" -> Hazegard_Data_ERS_<yyyymmdd>.csv.
+    /// "" -> hazegarddata<yyyymmdd>.csv ; "ERS" -> "Hazegard Data ERS <yyyymmdd>.csv" (có dấu cách).
     /// Nhiều phần tử -> mỗi lần đo ghi vào TẤT CẢ các file.
     pub systems: Vec<String>,
 }
@@ -80,7 +80,7 @@ impl DailyCsv {
                 if s.is_empty() {
                     self.outdir.join(format!("hazegarddata{}.csv", dt.format("%Y%m%d")))
                 } else {
-                    self.outdir.join(format!("Hazegard_Data_{}_{}.csv", s, dt.format("%Y%m%d")))
+                    self.outdir.join(format!("Hazegard Data {} {}.csv", s, dt.format("%Y%m%d")))
                 }
             })
             .collect()
@@ -162,6 +162,10 @@ mod tests {
         let s = std::fs::read_to_string(&p).unwrap();
         assert_eq!(s, format!("{}\r\nVGI1,05/11/2026 14:33:32,1852,100,LE,88.6,0.05,-0.6,0\r\n", CSV_HEADER));
         assert!(p.ends_with("hazegarddata20261105.csv") && p2.ends_with("hazegarddata20261106.csv"));
+        // Tên file ERS / Sequoia dùng dấu cách như hệ thống thật
+        let all = DailyCsv::with_systems(std::env::temp_dir(), vec!["".into(), "ERS".into(), "Sequoia".into()]).unwrap();
+        let names: Vec<String> = all.paths_for(&d.and_hms_opt(14, 33, 32).unwrap()).iter().map(|x| x.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["hazegarddata20261105.csv", "Hazegard Data ERS 20261105.csv", "Hazegard Data Sequoia 20261105.csv"]);
         let s2 = std::fs::read_to_string(&p2).unwrap();
         assert!(s2.contains("\"\",06/11/2026 00:00:05,\"\",\"\",\"\",100.0,0.00,\"\",\"\""));
         let _ = std::fs::remove_dir_all(&dir);
